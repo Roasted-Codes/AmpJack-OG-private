@@ -1,21 +1,28 @@
-# OG-AmpJack — private source snapshot
+# OG-AmpJack source map
 
-Experimental Xbox One/Series controller support on an original Xbox, through a passive USB cable.
+## One selected baseline
 
-## Hardware status (owner reports)
-- W43: Halo 2 TU1.5/u803 launched through XBMC; modern-pad buttons/sticks/triggers work after replug. Original pad works alongside it. No rumble.
-- W63: combined wake/rumble/logging experiment black-screened with logging enabled and disabled. Cause unproved.
-- W65 WAKE-ONLY: launches, but Xbox-button wake still blinks; replug restores input. Wake fix NOT successful.
-- W65 RUMBLE-ONLY: built and host-tested; hardware result pending.
+The user's live Halo 2 session was identified by read-only hook and code-section comparison as **AmpJack63-u803-3ddc05b8** (W63 combined module), with logging OFF. Input and vibration are owner-reported working. The earlier assumption that the preferred session was W65 RUMBLE-ONLY was incorrect.
 
-## Source map
-- `ogxbox/integration`, `gipdriver`, `gip`, `halo2`, `loader`: base implementation.
-- `ogxbox/work/32-opus-final-integration`: W43 module build lineage.
-- `ogxbox/work/43-trainer-candidate`: known playable trainer packaging.
-- `ogxbox/work/63-wake-rumble`: failed combined experiment, preserved for diagnosis.
-- `ogxbox/work/65-bisect/{baseline,wake,rumble}`: independent source copies, build tools and tests.
-- `tools/trainerfmt.py`: trainer format helper originally in LAN_Stats.
+| Path | Purpose |
+|---|---|
+| [`ogxbox/work/63-wake-rumble/src/`](ogxbox/work/63-wake-rumble/src/) | Exact controller source lineage selected by live readback. |
+| [`ogxbox/halo2-release/`](ogxbox/halo2-release/) | Portable packaging of that pinned module; normal installation names, tests and matched preview files. |
+| [`ogxbox/integration/`](ogxbox/integration/), [`gipdriver/`](ogxbox/gipdriver/), [`gip/`](ogxbox/gip/), [`halo2/`](ogxbox/halo2/) | Earlier base implementation and protocol/model work. |
+| `ogxbox/work/32-*`, `43-*`, `65-bisect/` | Historical lineage and experiments; not parallel maintained releases. |
+| `core/`, `tools/trainerfmt.py` | Shared protocol/format code; keep dependencies and notices. |
+| `xbox360/` and inherited non-OG docs | Historical AmpJack360 snapshot, not OG install instructions. |
 
-This snapshot retains source/build scripts and selected technical documentation. It excludes game XBEs, BIOS/SDK assets, compiled outputs, USB captures, screenshots, local credentials, worker transcripts, and emulator/vendor checkouts. Some historical scripts reference the original workspace and separately installed toolchains or game files; this is not a portable one-command distribution. No new console test was performed for this upload.
+The historical root `SOURCE-MANIFEST.json` describes the initial source upload; new release manifests describe the promoted artifacts. No old Git history is rewritten.
 
-The parent tree is AmpJack upstream commit b83cf6546e7d04c6013571d4641cb3e482b05e94. Existing licenses and notices are retained. The public AmpJack repository is not changed.
+## Selected module identity
+
+- ELF: `3ddc05b8c0c01a388ad9ab156660c8018a8a3d0fe4cc676af7548a5405ec7fab`
+- Payload: `8bf54869e1635fbcb8313226da7abd243c0b4fc4729b1b664f2828e030380448`
+- Original trainer: `3685f5680425fb72ec48acfd6c347e0f5d76c320352ee1d02d1ff76e5b6ed23d`
+- Live code-section SHA-256: `3538c20e7fe0382bb450e1c6af113a193c8a2cb08118a7e44a2991c80a0f52a9`
+- Selected resident/file-buffer allocations: 45056 / 24576 bytes. Keeping them unchanged does not establish retail 64 MiB memory headroom.
+
+The release wrapper changes filenames/display and forces the same logging-OFF mode. It must not change controller code, rumble, wake logic, kernel code or BIOS. Its source/module/wrapper hashes are linked in the release manifest. A renamed wrapper is not automatically hardware-tested.
+
+See [compatibility](docs/OG-COMPATIBILITY.md) for the unresolved wake/IGR/launch questions and [build notes](docs/OG-BUILD.md) for the distinction between portable packaging and a full source rebuild.

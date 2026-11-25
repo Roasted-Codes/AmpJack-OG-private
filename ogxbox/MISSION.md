@@ -1,3 +1,5 @@
+> Historical checkpoint: current selected build/status and scope are in [OG compatibility](../docs/OG-COMPATIBILITY.md) and [the root README](../README.md). Do not treat this older document as the current release contract.
+
 # AmpJack OG — wired Xbox One input in Halo 2
 
 Owner: Roasted. Request: research and implement overnight, up to ten DeepSeek workers.

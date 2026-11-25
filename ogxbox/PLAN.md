@@ -1,3 +1,5 @@
+> Historical checkpoint: current selected build/status and scope are in [OG compatibility](../docs/OG-COMPATIBILITY.md) and [the root README](../README.md). Do not treat this older document as the current release contract.
+
 # AmpJack-OG — canonical functionality plan
 
 Author/reviewer: openai-codex / gpt-6.1-sol. Owner instruction: Sol plans/reviews and oversees DeepSeek implementers; no global routing change. This file is the sole execution plan. PROJECT_STATE.md is the compact checkpoint, not another queue. Evidence: work/sol-audit/AUDIT.md, input-hashes.json and evidence-summary.json. Historical MISSION.md and worker briefs/reports are retained; their missing-hardware restriction, Fable-only hold and unsupported root-cause claims are superseded here.

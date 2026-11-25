@@ -1,0 +1,18 @@
+__pycache__/
+.verification-work/
+*.pyc
+dist/.build/
+# Explicitly promote only these release binaries despite historical global rules.
+!inputs/module.bin
+!inputs/module.elf
+!dist/
+dist/*
+!dist/candidate/
+!dist/README.md
+!dist/COPYING.GPL-3
+!dist/NOTICES.txt
+!dist/manifest.json
+!dist/SHA256SUMS
+!dist/candidate/*.bin
+!dist/candidate/*.xbtf
+!dist/*.zip

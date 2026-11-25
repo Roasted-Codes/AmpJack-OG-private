@@ -1,31 +1,35 @@
-# AmpJack
+# OG-AmpJack
 
-Wired Xbox One / Series controllers on a modded Xbox 360. Plug a headset into the controller and skip the MixAmp.
+Use a wired Xbox One / Series controller on an original Xbox through a passive USB cable. Current support is a title-local XBMC trainer for **stock Halo 2 TU1.5/u803**, not console-wide controller support.
 
-![The panel over Halo 3](docs/img/panel.png)
+## Current version
 
-Hold **Share** for the panel. Tap **Share** to mute.
+The owner likes the running **AmpJack63** build. A read-only XBDM probe of that Halo 2 session matched all seven hook targets and its complete code section to the preserved W63 module. Logging was OFF. The owner reports working controls and vibration, alongside an original controller.
 
-## Install
+- **Working in the owner's test:** modern-pad input and rumble; original pad alongside it.
+- **Still unresolved:** waking a dark, already-connected pad may only blink; unplug/replug is the workaround. IGR compatibility is not established.
+- **Historical failure:** this same W63 build previously black-screened at launch with logging on and off. It subsequently ran successfully; the cause and changed condition are unknown. Do not call that failure fixed.
+- **Cleanly named preview:** preserves the exact selected controller module with logging forced off. Reproducible packaging and actual-wrapper CPU checks passed; one hardware recheck of the renamed wrapper remains. See [compatibility](docs/OG-COMPATIBILITY.md).
 
-1. Download the zip from the [latest release](https://github.com/Roasted-Codes/AmpJack/releases/latest).
-2. Copy `xw.xex`, `xw.presets` and `xw.demo` to `Hdd:\Plugins\`.
-3. Add `xw.xex` to a free plugin slot in `launch.ini`.
-4. Reboot.
+The selected source is [`ogxbox/work/63-wake-rumble/src`](ogxbox/work/63-wake-rumble/src/). Historical experiments remain for provenance, not separate maintained releases.
 
-Needs kernel 17559. More in [`docs/WIRED.md`](docs/WIRED.md).
+## Install / download
 
-## Thanks
+Private preview package: [`OG-AmpJack-Halo2-v0.1.0-preview.1.zip`](ogxbox/halo2-release/dist/OG-AmpJack-Halo2-v0.1.0-preview.1.zip).
 
-- [Jacckii](https://github.com/Jacckii/Xbox360-Series-Controllers-Native): the plugin this is forked from.
-- [xone](https://github.com/dlundqvist/xone) (medusalix and contributors): controller protocol.
-- [mt76](https://github.com/openwrt/mt76) (Felix Fietkau, Lorenzo Bianconi, Stanislaw Gruszka): wireless adapter definitions.
-- [hiddriver360](https://github.com/EinTim23/hiddriver360) (EinTim23): USB and XInput route.
-- [The ZEFERENCE](https://github.com/XxUnkn0wnxX/TheZEFERENCE) (ZaliaS): sound presets.
-- [SADIE II](https://www.york.ac.uk/sadie-project/database.html) (University of York, Apache-2.0): surround data. See [`NOTICE`](NOTICE).
-- iMoD1998: Detours.h.
-- [micro-ecc](https://github.com/kmackay/micro-ecc) (Kenneth MacKay): cryptography.
-- [OpenXeChain](https://github.com/OpenXeChain) and SynthXEX: toolchain.
-- [BadUpdate](https://github.com/grimdoomer/Xbox360BadUpdate) (grimdoomer): code on kernel 17559.
+Copy the matching `OG-AmpJack-Halo2.xbtf` and `OG-AmpJack-Halo2.bin` into `E:\Trainers\` over FTP. Refresh XBMC's trainer list, select **OG-AmpJack - Halo 2**, enable **Enable controller support**, and launch the stock game through XBMC. Keep your existing working pair until the renamed package passes a console check. [Full installation and rollback](docs/OG-INSTALL.md).
 
-[GPL-3.0](LICENSE).
+No game, BIOS, SDK, or console credentials are included. Use your own stock u803 executable; a folder called “Halo 2 HD” is not evidence of a compatible executable.
+
+## Development
+
+- [Build and tests](docs/OG-BUILD.md)
+- [Compatibility and known limitations](docs/OG-COMPATIBILITY.md)
+- [Source map](OG-AMPJACK.md)
+- [Changelog](CHANGELOG.md)
+
+## Separate from AmpJack360
+
+This private repository is the OG Xbox project. The [public AmpJack repository](https://github.com/Roasted-Codes/AmpJack) is the separate Xbox 360 project. Do not install `xw.xex` or follow DashLaunch/360 instructions for OG-AmpJack. Headset/MixAmp and console-wide loading are research, not implemented OG features.
+
+This source snapshot retains inherited 360 code/docs and historical experiments. Only the OG paths above describe the current product. Original licenses and attribution are preserved; this is not a claim of independent authorship. See [LICENSE](LICENSE), [NOTICE](NOTICE), and the package notices.

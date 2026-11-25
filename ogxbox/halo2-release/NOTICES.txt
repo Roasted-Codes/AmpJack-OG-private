@@ -1,0 +1,47 @@
+OG-AmpJack - Halo 2 preview notices
+
+Selection note: this package preserves the exact owner-selected W63 combined
+module, not W65R or W32 itself. Parent's read-only live identification matched
+all seven hook targets and 19,180 code bytes; selected logging state was OFF.
+Owner reports input/rumble working after replug. Earlier W63 black-screen
+condition/cause remains unresolved; branded wrapper is hardware UNTESTED.
+The sole original wrapper source change forces flags=0; module and driver bytes
+and memory sizes remain unchanged from selected W63. No optional log UI.
+The own module ELF and AJ43 payload are pinned in inputs/; complete retained
+controller source lineage is ../work/63-wake-rumble/src/. The portable
+wrapper rebuild uses ../../tools/trainerfmt.py. See README.md and the new
+manifest for the current source map, identities and hardware limitation.
+Original historical notices below are preserved verbatim for attribution;
+their W32/local-path descriptions do not describe the promoted package.
+
+Original notices:
+AmpJack43 candidate notices
+
+New bootstrap, SHA-256 implementation, host pack/check and CPU fixture sources:
+SPDX-License-Identifier: GPL-3.0-or-later. Authored for this work directory.
+SHA-256 algorithm: FIPS 180-4; no third-party crypto implementation copied.
+
+Payload is a byte-preserving packaging of the pinned AmpJack-OG W32 ELF, NOT a
+newly compiled driver. AmpJack-OG and integration sources are GPL-3.0-or-later;
+retain upstream authors' notices. Input modules include GIP transport/presentation
+and driver code with their existing notices; this task does not relicense them.
+See the existing source tree LICENSE and source-level copyright notices.
+
+Trainer framing/obfuscation is produced by the local LAN_Stats tools/trainerfmt.py
+(GPL-3.0 project), based on XBMC4Xbox CTrainer::Load / CUtil::InstallTrainer at
+Rocky5/XBMC4Xbox 921f9fe9. CPU kernel-fixture pattern adapted from LAN_Stats
+ tests/test_stage2_loader_model.py; only the pattern, not its stats/Live module,
+is used. No LAN_Stats, Trinity Live, Yelo or networking runtime is packaged.
+
+The archive is an owner-local, unapproved testing candidate, not an upstream
+release. The authored minimal host sources are supplied beside the archive;
+manifest.json identifies exact source paths and hashes for the frozen W32 ELF,
+layout, relevant integration files and packager. Reproduction requires those
+local frozen GPL inputs. This is not a standalone corresponding-source bundle:
+before any distribution, supply the complete corresponding source and all
+upstream notices for the W32 binary and its dependencies. No upload is authorized.
+
+Only minimal hook/method byte signatures needed for build refusal are embedded.
+The XBE header is represented by a SHA-256 digest, not an embedded header/dump.
+No game/XBE binaries, BIOS/EEPROM, XDK headers/libs, guest images, machine config,
+credentials, sockets or keys are in this archive. No warranty; see COPYING.GPL-3.

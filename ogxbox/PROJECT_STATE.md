@@ -1,3 +1,5 @@
+> Historical checkpoint: current selected build/status and scope are in [OG compatibility](../docs/OG-COMPATIBILITY.md) and [the root README](../README.md). Do not treat this older document as the current release contract.
+
 # AmpJack-OG — current checkpoint
 
 Current as of 2026-11-25T02:49:06.781908+00:00. Ownerconfirmedphysicaldone1574978955318923306.
