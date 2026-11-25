@@ -1,0 +1,117 @@
+--- /home/roasted/Desktop/Xbox/AmpJack-OG/ogxbox/work/65-bisect/baseline/src/ogxbox/integration/ogx_present.c
++++ /home/roasted/Desktop/Xbox/AmpJack-OG/ogxbox/work/65-bisect/rumble/src/ogxbox/integration/ogx_present.c
+@@ -7,6 +7,8 @@
+  * not own, and chains every non-virtual call to the untouched title XID code.
+  */
+ #include "ogx_present.h"
++
++#define OGX_ERR_IO_PENDING 997u   /* ERROR_IO_PENDING (W63 SetState) */
+ 
+ /* ------------------------------------------------------------------------- */
+ /* presence contract                                                          */
+@@ -343,15 +345,21 @@
+ 		if (!ogx_port_present(ctx, v->port))
+ 			return OGX_ERR_NOT_CONNECTED;
+ 
+-		/* Input-only milestone: there are NO motors, so rumble cannot
+-		 * actuate and we will not pretend otherwise. We never read the
+-		 * header bytes as motor speeds and never emit a GIP rumble
+-		 * command. Returning ERROR_NOT_SUPPORTED and writing it into
+-		 * Header.dwStatus (the XID output-completion gate) tells the title
+-		 * honestly that the rumble did NOT happen; hEvent is left
+-		 * untouched because no completion occurs. */
+-		fb->Header.dwStatus = OGX_ERR_NOT_SUPPORTED;
+-		return OGX_ERR_NOT_SUPPORTED;
++		/* W63: store the desired motor speeds (Rumble at offset 66, never
++		 * the header) for the port; ogx_module_pump sends ONE GIP rumble
++		 * frame when the OUT path is idle (latest wins). The request is
++		 * complete as far as the title can observe: dwStatus = SUCCESS,
++		 * return ERROR_IO_PENDING (stock asynchronous semantics; the model
++		 * is silent). hEvent is recorded, NOT signalled in this slice. */
++		ctx->rumble_want[v->port] = (uint32_t)fb->Rumble.wLeftMotorSpeed |
++		                            ((uint32_t)fb->Rumble.wRightMotorSpeed << 16);
++		ctx->rumble_calls++;
++		if (!ctx->rumble_hevent_seen) {
++			ctx->rumble_hevent_seen = 1;
++			ctx->rumble_hevent = fb->Header.hEvent;
++		}
++		fb->Header.dwStatus = OGX_ERR_SUCCESS;
++		return OGX_ERR_IO_PENDING;
+ 	}
+ 	if (k == OGX_HK_STALE)
+ 		return OGX_ERR_NOT_CONNECTED;
+--- /home/roasted/Desktop/Xbox/AmpJack-OG/ogxbox/work/65-bisect/baseline/src/ogxbox/integration/ogx_present.h
++++ /home/roasted/Desktop/Xbox/AmpJack-OG/ogxbox/work/65-bisect/rumble/src/ogxbox/integration/ogx_present.h
+@@ -120,6 +120,13 @@
+ 	uint32_t insertion_edges;
+ 	uint32_t removal_edges;
+ 	uint32_t forged_handles;
++
++	/* W63 rumble: desired motor speeds (wLeft | wRight << 16) written by the
++	 * virtual XInputSetState, consumed by ogx_module_pump. Title thread only. */
++	uint32_t rumble_want[OGX_MAX_PORTS];
++	uint32_t rumble_calls;        /* virtual SetState calls accepted        */
++	uint32_t rumble_hevent;       /* hEvent of the first call (never signalled) */
++	uint32_t rumble_hevent_seen;
+ };
+ 
+ /* whether a port is "present" under the decided contract */
+--- /home/roasted/Desktop/Xbox/AmpJack-OG/ogxbox/work/65-bisect/baseline/src/ogxbox/integration/ogx_transport.c
++++ /home/roasted/Desktop/Xbox/AmpJack-OG/ogxbox/work/65-bisect/rumble/src/ogxbox/integration/ogx_transport.c
+@@ -42,6 +42,8 @@
+  *      ogx_g_module.host BEFORE ogx_module_entry(): BSS is zero at load, and
+  *      entry does NOT re-zero host. ---------------------------------------------- */
+ struct ogx_module ogx_g_module;
++static uint32_t ogx_rumble_sent;
++static uint32_t ogx_rumble_frames;
+ 
+ /* ---- transport seams: gdr_*_fn are plain function pointers in gipdrive.h;
+  *      these wrappers do the thiscall through the injected VA. ------------------ */
+@@ -264,6 +266,7 @@
+ 	if (g == ogx_seen_generation)
+ 		return;
+ 	ogx_seen_generation = g;
++	ogx_rumble_sent = 0;          /* W63: re-send a nonzero rumble after replug */
+ 	ogx_stale_until  = ogx_g_module.ring.head;   /* read AFTER generation */
+ 	ogx_stale_active = 1;
+ 	ogx_gen_resyncs++;
+@@ -333,6 +336,31 @@
+ 	}
+ }
+ 
++/* ---- W63 rumble: ONE frame when the whole OUT path is idle (latest wins) ----
++ * xpad Xbox One form: 09 00 <seq> 09 | 00 0F 00 00 <L> <R> FF 00 FF, with
++ * L = OG left (low-frequency) speed >> 9, R = right speed >> 9. Never between a
++ * power-on and its S-init. Title thread only; the frame goes through the normal
++ * drain -> span-locked enqueue -> submit path. */
++static void ogx_rumble_service(void)
++{
++	struct gdr_gip *m = &ogx_g_module.gip;
++	const struct gdr_attach_ctx *a = &ogx_g_module.att;
++	u32 want = ogx_g_module.present.rumble_want[OGX_TRANSPORT_PORT];
++	u8 p[9] = { 0x00, 0x0F, 0x00, 0x00, 0, 0, 0xFF, 0x00, 0xFF };
++	u8 f[64]; int n;
++	if (!m->ready || m->s_init_pending || want == ogx_rumble_sent)
++		return;
++	if (m->txh != m->txt || a->tx_head != a->tx_tail || a->tx_busy)
++		return;
++	p[4] = (u8)((want & 0xffffu) >> 9);
++	p[5] = (u8)((want >> 16) >> 9);
++	n = gdr_gip_frame(f, GIP_CMD_RUMBLE, 0, gdr_next_seq(m), p, 9);
++	if (gdr_tx_send(m, f, n)) {
++		ogx_rumble_sent = want;
++		ogx_rumble_frames++;
++	}
++}
++
+ void ogx_transport_init(void)
+ {
+ 	struct ogx_host_ctx *p = &ogx_g_module.present;
+@@ -444,6 +472,7 @@
+ 		if (ogx_g_module.att.state >= 6u && ogx_g_module.gip.gamepad == 0)
+ 			gdr_gip_qualify_wired(&ogx_g_module.gip);  /* minimal power-on, S-init on done */
+ 		gdr_gip_poll(&ogx_g_module.gip, now);
++		ogx_rumble_service();
+ 
+ 		/* OUT: drain (title-thread decoder state, outside any span), then
+ 		 * enqueue and submit each in its own short DISPATCH span with the

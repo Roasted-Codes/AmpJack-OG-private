@@ -1,0 +1,300 @@
+--- work/29-opus-input-fixes/frozen/ogxbox/integration/ogx_transport.c	2026-11-24 23:48:14.714813079 -0500
++++ integration/ogx_transport.c	2026-11-25 00:10:05.488293753 -0500
+@@ -129,6 +129,83 @@
+ 	gdr_remove_device(&ogx_g_module.att, device);
+ }
+ 
++/* ---- lifecycle truth independent of ring delivery (F1/F2/F3) ----------------
++ * All of the state below is owned by the TITLE THREAD only: it is touched from
++ * ogx_module_pump() (called from the XGetDeviceChanges stub) and from
++ * ogx_transport_sync() (called from the other game-facing stubs). The DPC
++ * producers are NOT changed: they still only push bounded ring events. The
++ * title thread only READS the producer-owned att.generation / ring.head /
++ * ring.overflow (aligned u32 loads) and only advances its own ring.tail by
++ * normal pops; it never writes a producer index or counter.
++ *
++ * Ordering assumption (scoped, not asserted lock-free): RemoveDevice and the
++ * URB completions run to completion without being interleaved with each other
++ * by the title thread (single CPU; the title thread can be interrupted by them,
++ * not the reverse). Under that model RemoveDevice's generation++ and its
++ * DETACH push are observed together, and a dropped event can only be newer
++ * than everything still queued (drop-newest, and no pop happened since).   */
++static uint32_t ogx_seen_generation;   /* last att.generation acted upon          */
++static uint32_t ogx_stale_until;       /* ring index: events before it predate the
++                                        * observed generation change -> discarded  */
++static uint32_t ogx_stale_active;
++static uint32_t ogx_seen_overflow;     /* last ring.overflow value acted upon      */
++static uint32_t ogx_hold_removal;      /* keep the port unpublished until the game
++                                        * has been shown the removal edge          */
++static uint32_t ogx_pub_seq;           /* game-facing snapshot sequence            */
++static uint32_t ogx_pub_reports;       /* gip.input_reports last published         */
++static uint32_t ogx_pub_force;         /* republish even without a new report      */
++static uint32_t ogx_lost_events;       /* diagnostics: events lost to overflow     */
++static uint32_t ogx_gen_resyncs;       /* diagnostics: generation-driven resyncs   */
++
++static int ogx_ring_before(uint32_t idx, uint32_t until)
++{
++	return (int32_t)(idx - until) < 0;      /* wrap-safe ring index compare */
++}
++
++static void ogx_gport_neutral(struct og_gip_port *gp)
++{
++	gp->ready = false;
++	gp->snapshot_valid = false;
++	memset(&gp->gamepad, 0, sizeof(gp->gamepad));
++}
++
++/* Generation-driven resync: called on the title thread whenever the real
++ * att.generation differs from the last one acted upon, whether or not the
++ * DETACH event survived the ring. Neutralizes the decoder (gen2 requalifies and
++ * gets its own power-on), the published snapshot and every live virtual handle
++ * of the port, and holds the port unpublished until the game's next
++ * XGetDeviceChanges has reported the removal edge (prev_present is untouched,
++ * so the game's removal event is not consumed). Events queued before this point
++ * belong (in part) to the old generation and are discarded, never decoded. */
++void ogx_transport_sync(void)
++{
++	uint32_t g = ogx_g_module.att.generation;
++	if (g == ogx_seen_generation)
++		return;
++	ogx_seen_generation = g;
++	ogx_stale_until  = ogx_g_module.ring.head;   /* read AFTER generation */
++	ogx_stale_active = 1;
++	ogx_gen_resyncs++;
++	gdr_gip_neutralize(&ogx_g_module.gip);
++	ogx_gport_neutral(&ogx_g_module.gport[OGX_TRANSPORT_PORT]);
++	ogx_g_module.present.attached_mask &= ~(1u << OGX_TRANSPORT_PORT);
++	ogx_hold_removal = 1;
++	ogx_pub_force = 1;
++	ogx_present_port_lost(&ogx_g_module.present, OGX_TRANSPORT_PORT);
++}
++
++/* Overflow fail-closed (F3): events were dropped (drop-newest), so the newest
++ * physical state is unknown. Clear the decoded snapshot to neutral (all
++ * buttons released, sticks centred) and republish with a new packet number.
++ * The pad stays connected; it shows real input again on its next report. If
++ * the user is still holding a button when the overflow ends, it reads as
++ * released until the pad reports a change: fail CLOSED, never a stuck press. */
++static void ogx_overflow_neutral(void)
++{
++	memset(&ogx_g_module.gip.snap, 0, sizeof(ogx_g_module.gip.snap));
++	ogx_pub_force = 1;
++}
++
+ /* ---- snapshot -> presentation bridge ----------------------------------------
+  * gdr_snapshot and og_gamepad share the SAME 18-byte wire layout (asserted).    */
+ static void ogx_bridge_publish(void)
+@@ -138,14 +215,31 @@
+ 	uint32_t mask = 1u << OGX_TRANSPORT_PORT;
+ 	int live = gdr_transport_live((int)ogx_attach_ran, ogx_g_module.att.in_handle);
+ 
++	/* removal hold: release only once the game has been shown the removal
++	 * (effective presence already 0), so a fast replug always produces a
++	 * rem edge before the next ins edge. */
++	if (ogx_hold_removal && !p->prev_present[OGX_TRANSPORT_PORT])
++		ogx_hold_removal = 0;
++	if (ogx_hold_removal)
++		live = 0;
++
+ 	if (live) {
+ 		/* powered-readable = gdr_gip.ready (set once minimal power-on accepted).
+ 		 * Same "powered-ready, NOT input-seen" contract og_gip.h documents. */
+ 		gp->ready = ogx_g_module.gip.ready ? true : false;
++		if (ogx_pub_force || ogx_g_module.gip.input_reports != ogx_pub_reports) {
++			ogx_pub_seq++;
++			ogx_pub_reports = ogx_g_module.gip.input_reports;
++			ogx_pub_force = 0;
++		}
++		gp->seq = ogx_pub_seq;
+ 		if (ogx_g_module.gip.snapshot_valid) {
+ 			gp->snapshot_valid = true;
+ 			memcpy(&gp->gamepad, &ogx_g_module.gip.snap, sizeof(gp->gamepad));
+-			gp->seq = ogx_g_module.gip.input_reports;
++		} else {
++			/* no trusted frame in THIS generation: never keep an older one */
++			gp->snapshot_valid = false;
++			memset(&gp->gamepad, 0, sizeof(gp->gamepad));
+ 		}
+ 		p->attached_mask |= mask;
+ 	} else {
+@@ -189,6 +283,10 @@
+ 
+ 	gdr_gip_init(&ogx_g_module.gip, 0);
+ 	gdr_ring_reset(&ogx_g_module.ring);
++	ogx_seen_generation = ogx_g_module.att.generation;
++	ogx_seen_overflow   = ogx_g_module.ring.overflow;
++	ogx_stale_active = 0;
++	ogx_hold_removal = 0;
+ 
+ 	/* 24-byte VERIFIED class description */
+ 	ogx_g_module.desc.MatchByte0 = 0x81;   /* low byte of measured PNP_CLASS_ID 0xFF81 */
+@@ -210,18 +308,50 @@
+ void ogx_module_pump(void)
+ {
+ 	struct gdr_evt ev;
+-	u32 now;
++	u32 now, ov, ov_until = 0, idx;
++	int ov_pending = 0;
+ 
+-	while (gdr_ring_pop(&ogx_g_module.ring, &ev)) {
++	/* 1. lifecycle truth from the real generation, not from ring delivery */
++	ogx_transport_sync();
++
++	/* 2. overflow: everything queued NOW is older than the dropped events
++	 *    (drop-newest; no pop since the drop). Decode it as history, then
++	 *    neutralize at that boundary; events pushed later are newer and
++	 *    trusted. overflow is read, never cleared (producer-owned). */
++	ov = ogx_g_module.ring.overflow;
++	if (ov != ogx_seen_overflow) {
++		ogx_lost_events += ov - ogx_seen_overflow;
++		ogx_seen_overflow = ov;
++		ov_until = ogx_g_module.ring.head;       /* read AFTER overflow */
++		ov_pending = 1;
++	}
++
++	for (;;) {
++		idx = ogx_g_module.ring.tail;            /* consumer-owned */
++		if (ov_pending && !ogx_ring_before(idx, ov_until)) {
++			ogx_overflow_neutral();
++			ov_pending = 0;
++		}
++		if (!gdr_ring_pop(&ogx_g_module.ring, &ev))
++			break;
++		if (ogx_stale_active) {
++			if (ogx_ring_before(idx, ogx_stale_until))
++				continue;                /* predates the generation change */
++			ogx_stale_active = 0;
++		}
+ 		if (ev.kind == GDR_EVT_RX) {
+ 			gdr_gip_rx(&ogx_g_module.gip, ev.data, (int)ev.len);
+ 		} else if (ev.kind == GDR_EVT_TXDONE && ev.b == GIP_CMD_POWER &&
+ 		           (long)(int)ev.a >= 0) {
+ 			gdr_gip_on_power_done(&ogx_g_module.gip);
+ 		} else if (ev.kind == GDR_EVT_DETACH) {
+-			gdr_gip_neutralize(&ogx_g_module.gip);   /* reset snapshot/id/tx/seq */
++			/* a removal pushed while we were draining: same generation
++			 * resync (discards what remains of the old generation) */
++			ogx_transport_sync();
+ 		}
+ 	}
++	if (ov_pending)
++		ogx_overflow_neutral();
+ 
+ 	/* now_ms is UNUSED by gdr_gip_poll (a no-op) -- all timing is
+ 	 * completion-driven. It is read here only to keep the (correctly typed u32
+@@ -252,6 +382,8 @@
+ 	if (ogx_g_module.gip.snapshot_valid)     s |= (1u << 10);
+ 	if (ogx_g_module.install_failed)         s |= (1u << 11);
+ 	if (ogx_g_module.host.cancel_request == 0) s |= (1u << 12);  /* cancel optional/unresolved */
++	if (ogx_lost_events)                     s |= (1u << 13);  /* ring overflow -> fail-closed neutral ran */
++	if (ogx_gen_resyncs)                     s |= (1u << 14);  /* generation-driven resync ran */
+ 	return s;
+ }
+ 
+--- work/29-opus-input-fixes/frozen/ogxbox/integration/ogx_present.c	2026-11-23 23:50:07.920240556 -0500
++++ integration/ogx_present.c	2026-11-25 00:07:12.841923868 -0500
+@@ -63,6 +63,17 @@
+ 	return v->live ? OGX_HK_LIVE : OGX_HK_STALE;
+ }
+ 
++void ogx_present_port_lost(struct ogx_host_ctx *ctx, uint32_t port)
++{
++	if (!ctx || port >= OGX_MAX_PORTS)
++		return;
++	for (uint32_t i = 0; i < OGX_HANDLE_ARENA; i++) {
++		struct ogx_vhandle *v = &ctx->vh[i];
++		if (v->live && v->magic == OGX_HANDLE_MAGIC && v->port == port)
++			v->live = 0;   /* never reissued (monotonic arena) -> dead forever */
++	}
++}
++
+ /* ------------------------------------------------------------------------- */
+ /* XGetDeviceChanges                                                          */
+ /* ------------------------------------------------------------------------- */
+--- work/29-opus-input-fixes/frozen/ogxbox/integration/ogx_present.h	2026-11-23 23:50:15.171806523 -0500
++++ integration/ogx_present.h	2026-11-25 00:07:12.841907808 -0500
+@@ -125,6 +125,16 @@
+ /* whether a port is "present" under the decided contract */
+ bool ogx_port_present(const struct ogx_host_ctx *ctx, uint32_t port);
+ 
++/* Transport-reported loss of the physical device behind `port` (generation
++ * change: unplug, fast replug, or a lifecycle event lost to ring overflow).
++ * Immediately kills every live synthetic handle of that port, so
++ * GetState/GetCapabilities/SetState on them return DEVICE_NOT_CONNECTED even
++ * before the title's next XGetDeviceChanges. It does NOT touch prev_present:
++ * the game's removal edge is still reported by the next XGetDeviceChanges
++ * (the caller must also drop attached_mask until that edge is reported).
++ * Title thread only (same owner as the six entry points). */
++void ogx_present_port_lost(struct ogx_host_ctx *ctx, uint32_t port);
++
+ /* The six intercepted entry points. Each one discriminates the handle/value and
+  * either serves the virtual path or chains to orig_* (never swallows native). */
+ uint32_t  ogx_XGetDeviceChanges(struct ogx_host_ctx *ctx, uintptr_t dtype,
+--- work/29-opus-input-fixes/frozen/ogxbox/integration/ogx_stub.c	2026-11-24 23:48:20.947047554 -0500
++++ integration/ogx_stub.c	2026-11-25 00:08:12.327174058 -0500
+@@ -16,6 +16,15 @@
+  * chained path ever reached back into a hook (it does not today). */
+ void ogx_module_pump(void);
+ 
++/* Title-thread generation resync (ogx_transport.c): a cheap compare of the
++ * real attach generation, no ring decode. Called before every entry point
++ * that can serve a virtual handle, so an unplug/replug seen by RemoveDevice
++ * kills old handles and the old snapshot even if the game has not called
++ * XGetDeviceChanges yet. It does not consume the removal edge (the next
++ * XGetDeviceChanges still reports it). Idempotent; it only clears state, so a
++ * chained native call re-entering a hook cannot corrupt it. */
++void ogx_transport_sync(void);
++
+ static int g_pump_depth;
+ 
+ void ogx_stub_bind_ctx(struct ogx_host_ctx *ctx)
+@@ -33,31 +42,38 @@
+ 		g_pump_depth = 1;
+ 		ogx_module_pump();
+ 		g_pump_depth = 0;
++	} else {
++		ogx_transport_sync();
+ 	}
+ 	return ogx_XGetDeviceChanges(g_ctx, dtype, ins, rem);
+ }
+ 
+ uintptr_t OGX_STDCALL ogx_stub_xinputopen(uintptr_t dtype, uint32_t port, uint32_t slot, uintptr_t poll)
+ {
++	ogx_transport_sync();
+ 	return ogx_XInputOpen(g_ctx, dtype, port, slot, poll);
+ }
+ 
+ void OGX_STDCALL ogx_stub_xinputclose(uintptr_t handle)
+ {
++	ogx_transport_sync();
+ 	ogx_XInputClose(g_ctx, handle);
+ }
+ 
+ uint32_t OGX_STDCALL ogx_stub_xinputgetcaps(uintptr_t handle, uintptr_t caps)
+ {
++	ogx_transport_sync();
+ 	return ogx_XInputGetCapabilities(g_ctx, handle, caps);
+ }
+ 
+ uint32_t OGX_STDCALL ogx_stub_xinputgetstate(uintptr_t handle, uintptr_t state)
+ {
++	ogx_transport_sync();
+ 	return ogx_XInputGetState(g_ctx, handle, state);
+ }
+ 
+ uint32_t OGX_STDCALL ogx_stub_xinputsetstate(uintptr_t handle, uintptr_t feedback)
+ {
++	ogx_transport_sync();
+ 	return ogx_XInputSetState(g_ctx, handle, feedback);
+ }
+--- work/29-opus-input-fixes/frozen/ogxbox/integration/ogx_module.h	2026-11-24 23:47:53.680427860 -0500
++++ integration/ogx_module.h	2026-11-25 00:07:55.317245654 -0500
+@@ -113,6 +113,8 @@
+ int  ogx_install_hooks(void);                           /* 6 XInput + FC E9 write */
+ int  ogx_module_entry(void *unused);                    /* .text.entry           */
+ void ogx_module_pump(void);                             /* per-title-tick        */
++void ogx_transport_sync(void);                          /* title-thread generation
++                                                         * resync (no ring decode) */
+ uintptr_t OGX_STDCALL ogx_findclassdriver(uint32_t classId); /* E9 hook target */
+ uint32_t ogx_module_status(void);                       /* install/transport bitmask */
+ 

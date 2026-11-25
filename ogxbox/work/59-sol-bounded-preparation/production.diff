@@ -1,0 +1,232 @@
+--- before/parent_launch.py
++++ after/parent_launch.py
+@@ -7,6 +7,7 @@
+ import hashlib
+ import json
+ import os
++import re
+ from pathlib import Path
+ import subprocess
+ import time
+@@ -33,12 +34,22 @@
+ 
+ def environment(lease):
+     path = Path(lease['environment_file'])
++    if lease.get('active_slot') == 'post-entry-59':
++        exact_path(str(path), path)
+     if hashlib.sha256(path.read_bytes()).hexdigest() != lease['environment_file_identity']['sha256']:
+         raise ValueError('environment identity mismatch')
+     private = json.loads(path.read_text())
+-    if private != {'DISPLAY': ':2', 'WAYLAND_DISPLAY': '/run/user/1000/hermes-xbox-lab/wayland-0', 'SDL_VIDEO_DRIVER': 'x11', 'XDG_RUNTIME_DIR': '/run/user/1000'}:
+-        raise ValueError('private display mismatch')
+-    for path in (Path('/tmp/.X11-unix/X2'), Path(private['WAYLAND_DISPLAY'])):
++    if lease.get('active_slot') == 'post-entry-59':
++        validate_private59(private)
++        if private != lease.get('private_environment'):
++            raise ValueError('private display attestation mismatch')
++        sockets = (Path('/tmp/.X11-unix/X'+private['DISPLAY'][1:]), Path(private['WAYLAND_DISPLAY']))
++        for socket in sockets:exact_path(str(socket),socket)
++    else:
++        if private != {'DISPLAY': ':2', 'WAYLAND_DISPLAY': '/run/user/1000/hermes-xbox-lab/wayland-0', 'SDL_VIDEO_DRIVER': 'x11', 'XDG_RUNTIME_DIR': '/run/user/1000'}:
++            raise ValueError('private display mismatch')
++        sockets = (Path('/tmp/.X11-unix/X2'), Path(private['WAYLAND_DISPLAY']))
++    for path in sockets:
+         if not path.is_socket() or path.stat().st_uid != os.getuid():
+             raise ValueError('private display socket missing or wrong owner')
+     env = dict(os.environ)
+@@ -216,6 +227,48 @@
+ 
+ SLOT49='post-entry-49'
+ DIGEST49='e6d93a69af3795a8182a2e4c3d993075b06bb29379c889ef702e746dea0ed6b8'
++CLAIM49='55f62df43b0e494a30b3172e582cae8dcde0f810cb181b67ffc0b0a906aed982'
++MANIFEST49='74502849c979672cb06362d9e9a91fce653c0b45809e4b578fe49cc33b2b27ad'
++
++def validate_private59(private):
++    runtime='/run/user/'+str(os.getuid())
++    if not (isinstance(private,dict) and set(private)=={'DISPLAY','WAYLAND_DISPLAY','SDL_VIDEO_DRIVER','XDG_RUNTIME_DIR'}
++            and re.fullmatch(r':(?:[2-9]|[1-9][0-9]+)',private.get('DISPLAY',''))
++            and private.get('SDL_VIDEO_DRIVER')=='x11' and private.get('XDG_RUNTIME_DIR')==runtime):
++        raise ValueError('private display aliases/public/software environment refused')
++    wayland=Path(private['WAYLAND_DISPLAY'])
++    if not wayland.is_relative_to(Path(runtime)) or len(wayland.relative_to(runtime).parts)<2:
++        raise ValueError('private Wayland path outside attested runtime')
++    exact_path(str(wayland),wayland)
++
++def required_sources59():
++    """Immutable prior closure plus mandatory new runtime dependencies.
++
++    The caller's manifest cannot choose its own minimum source set. The old
++    closure is an immutable inventory, not old launch authority or old hashes.
++    """
++    inventory=ROOT/'post-entry-49/SOURCE-MANIFEST.json'
++    exact_path(str(inventory),inventory)
++    raw=inventory.read_bytes()
++    if hashlib.sha256(raw).hexdigest()!=MANIFEST49:
++        raise ValueError('historical source inventory changed')
++    names={Path(p) for p in json.loads(raw)['files'] if '/post-entry-49/' not in p}
++    original=Path(json.loads(raw)['work_root']) if 'work_root' in json.loads(raw) else Path('/home/roasted/Desktop/Xbox/AmpJack-OG/ogxbox/work/45-x11-runtime-capture')
++    original_guest=original.parent/'42-enum-observer/parent-prepared-guest'
++    names={ROOT/p.relative_to(original) if p.is_relative_to(original) else GUEST/p.relative_to(original_guest) if p.is_relative_to(original_guest) else p for p in names}
++    names.update(ROOT/'tools'/n for n in ('usb_target57.py','test_usb_target57.py','test_active_slot59.py'))
++    names.add(ROOT.parent/'52-usb-topology/topology_check.py')
++    names.update(ROOT.parent/'astra-emu-fix/source/hw/usb'/n for n in ('host-libusb.c','bus.c'))
++    names.add(ROOT/'tools/test_observer_local_invariant54.py')
++    return {str(p) for p in names}
++
++def source_confirmation59(binding,path,digest):
++    raw=(path/'SOURCE-MANIFEST.json').read_bytes(); manifest=json.loads(raw)
++    if not required_sources59() <= set(manifest.get('files',{})) or not manifest.get('test_receipts'):
++        raise ValueError('required source/dependency/test receipt membership missing')
++    for name in {**manifest['files'],**manifest['test_receipts'],**manifest.get('fixture_files',{})}:
++        p=Path(name);exact_path(name,p)
++    return source_confirmation47(binding,manifest_path=path/'SOURCE-MANIFEST.json',digest=digest)
+ 
+ def exact_path(value, expected):
+     if value!=str(expected) or expected.resolve()!=expected:
+@@ -234,21 +287,45 @@
+     @property
+     def live(self):return self.path/'live'
+     def authority(self,lease,**kwargs):
+-        current=resolve_active_slot(**kwargs)
++        current=resolve_active_slot(_selected=self,**kwargs)
+         if current.path!=self.path or current.lease!=lease or lease!=self.lease:
+             raise ValueError('active slot changed during transaction')
+         return current.binding
+     def launch(self,env,*,gates,run=subprocess.run):
++        if self.path.name=='post-entry-59':
++            self.authority(self.lease)
++            fresh59(self)
++            # The initial selector belongs to FreshEffects. These are pinned
++            # authority rereads, including the final read after stopped gates.
++            def checked_gates(lease,env):
++                proof=gates(lease,env);fresh59(self);return proof
++            def issue(cmd,**kw):
++                if cmd[0]=='systemd-run':self.authority(self.lease,consumed=True)
++                return run(cmd,**kw)
++            return launch(self.lease,env,gates=checked_gates,run=issue,bind=self.authority,
++                          claim_path=self.claim,output=self.live,digest=self.digest)
+         return launch(self.lease,env,gates=gates,run=run,bind=self.authority,
+                       claim_path=self.claim,output=self.live,digest=self.digest)
+ 
+-def resolve_active_slot(*, canonical=None, session=None, require_confirmation=True, consumed=False):
++def fresh59(slot):
++    if slot.claim.exists() or slot.claim.is_symlink():raise FileExistsError('existing or interrupted claim; spent')
++    if slot.live.exists() and any(slot.live.iterdir()):raise ValueError('stale live output before issue')
++
++def resolve_active_slot(*, canonical=None, session=None, require_confirmation=True, consumed=False, _selected=None):
+     """One canonical selection; historical adapters are never live fallbacks."""
+     if any(k in os.environ for k in ('AMPJACK_RUNTIME_SLOT','W45_RUNTIME_SLOT','RUNTIME_SLOT')):
+         raise ValueError('environment slot selection forbidden')
+     c=json.loads((ROOT.parent/'sol-audit/COORDINATOR_STATE.json').read_text()) if canonical is None else canonical
+     b=c.get('runtime_binding',{});actual=os.environ.get('HERMES_SESSION_ID') if session is None else session
+-    path=ROOT/SLOT49
++    slot=b.get('slot')
++    if slot not in (SLOT49,'post-entry-59'):raise ValueError('unknown active slot; no historical fallback')
++    is59=slot=='post-entry-59'
++    path=ROOT/slot
++    digest=b.get('lease_sha256') if is59 else DIGEST49
++    if not isinstance(digest,str) or not re.fullmatch('[0-9a-f]{64}',digest) or len(set(digest))==1:
++        raise ValueError('canonical lease digest missing/placeholder')
++    historical,entries,ceiling=(4,2,5) if is59 else (3,1,4)
++    unit='ampjack-parent59-devkit.service' if is59 else 'ampjack-parent49-devkit.service'
+     for field,expected in (('work_root',ROOT),('guest_root',GUEST),('slot_path',path),('evidence_root',path),
+           ('lease_path',path/'PARENT-RUNTIME-LEASE.json'),('claim_path',path/'runtime-claim.json'),
+           ('manifest_path',path/'SOURCE-MANIFEST.json')):exact_path(b.get(field),expected)
+@@ -257,46 +334,80 @@
+         exact_path(str(path/name),path/name)
+     if (path/'live').exists():
+         for child in (path/'live').rglob('*'):exact_path(str(child),child)
++    if is59:
++        for child in path.rglob('*'):
++            if not child.is_relative_to(path/'preparation'):exact_path(str(child),child)
+     if not (actual and b.get('session')==actual and c.get('owner_hold') is False and c.get('resume_authorized') is True
+         and c.get('runtime_card')=='t_af7623e9' and b.get('card')=='t_af7623e9' and b.get('owner')==ROOT.name
+         and c.get('runtime_owner')=='45-x11-runtime-capture exclusive conditional lease; no parent clients or competing writer'
+-        and b.get('slot')==SLOT49 and b.get('mode')=='post_entry49_fresh_bounded_launch'
+-        and b.get('state') in ('verified_prepare_only','verified') and b.get('lease_sha256')==DIGEST49
+-        and b.get('unit')=='ampjack-parent49-devkit.service' and b.get('restart')=='no'
++        and b.get('mode')==('post_entry59_fresh_bounded_launch' if is59 else 'post_entry49_fresh_bounded_launch')
++        and b.get('state') in ('verified_prepare_only','verified') and b.get('lease_sha256')==digest
++        and b.get('unit')==unit and b.get('restart')=='no'
+         and b.get('provider')=='openai-codex' and b.get('model')=='gpt-6.1-sol' and b.get('route_verified') is True
+-        and b.get('historical_launch_commands')==3 and b.get('historical_authenticated_loaded_TU_boots')==1
+-        and b.get('separately_granted_commands')==1 and b.get('cumulative_ceiling')==4
++        and b.get('historical_launch_commands')==historical and b.get('historical_authenticated_loaded_TU_boots')==entries
++        and b.get('separately_granted_commands')==1 and b.get('cumulative_ceiling')==ceiling
+         and b.get('remaining_commands') in ((0,1) if consumed else (1,))):
+         raise ValueError('active slot authority/session/route/budget mismatch')
+     raw=(path/'PARENT-RUNTIME-LEASE.json').read_bytes()
+-    if hashlib.sha256(raw).hexdigest()!=DIGEST49:raise ValueError('active receipt digest mismatch')
++    if hashlib.sha256(raw).hexdigest()!=digest:raise ValueError('active receipt digest mismatch')
+     lease=json.loads(raw)
+     if not (lease.get('status')=='PROVIDED' and lease.get('owner')==ROOT.name and lease.get('work_root')==str(ROOT)
+-        and lease.get('fresh_clone')==str(GUEST) and lease.get('active_slot')==SLOT49
++        and lease.get('fresh_clone')==str(GUEST) and lease.get('active_slot')==slot
+         and lease.get('slot_path')==str(path) and lease.get('evidence_root')==str(path)
+         and lease.get('claim_path')==str(path/'runtime-claim.json') and lease.get('unit')==b['unit'] and lease.get('restart')=='no'
+-        and lease.get('owner_hold') is False and lease.get('historical_launch_commands')==3
++        and lease.get('owner_hold') is False and lease.get('historical_launch_commands')==historical
+         and lease.get('old_allowance_remaining')==0 and lease.get('new_launch_commands_allowed')==1
+-        and lease.get('boot_launch_commands')==0 and lease.get('cumulative_command_ceiling')==4
++        and lease.get('boot_launch_commands')==0 and lease.get('cumulative_command_ceiling')==ceiling
+         and c.get('resume_authority_message')==lease.get('authority') and c.get('scope_correction_message')==lease.get('scope_correction')):
+         raise ValueError('active receipt scope/budget mismatch')
+     for key in ('previous_lease','previous_claim'):
+         pin=lease[key]
++        if is59:
++            expected=ROOT/'post-entry-49'/('PARENT-RUNTIME-LEASE.json' if key=='previous_lease' else 'runtime-claim.json')
++            exact_path(pin['path'],expected)
++            if pin['sha256']!=(DIGEST49 if key=='previous_lease' else CLAIM49):raise ValueError('wrong spent49 predecessor pin')
+         if hashlib.sha256(Path(pin['path']).read_bytes()).hexdigest()!=pin['sha256']:raise ValueError('historical spent input changed')
++    if is59:
++        if not (b.get('billing_mode')=='subscription_included' and b.get('reasoning')=='medium'
++                and b.get('old_allowance_remaining')==0 and b.get('process') and type(b.get('pid')) is int and b['pid']>0
++                and lease.get('historical_authenticated_loaded_TU_boots')==2
++                and lease.get('authority')=='1575044307038109747' and lease.get('scope_correction')=='1575048626248486923'):
++            raise ValueError('slot59 worker/route/authority mismatch')
++        validate_private59(b.get('private_environment'))
++        if lease.get('private_environment')!=b['private_environment']:raise ValueError('private environment not parent-attested')
++        for group in ('identities','frozen_inputs'):
++            for pin in lease.get(group,{}).values():exact_path(pin['path'],Path(pin['path']))
++        exact_path(lease['environment_file'],Path(lease['environment_file']))
++        if _selected is not None:
++            fixed={k:v for k,v in _selected.binding.items() if k not in ('remaining_commands','new_launch_authorized')}
++            if _selected.path!=path or _selected.digest!=digest or _selected.lease!=lease or any(b.get(k)!=v for k,v in fixed.items()):
++                raise ValueError('active slot identity/binding changed during transaction')
++        if consumed:
++            claim=json.loads((path/'runtime-claim.json').read_text())
++            if claim.get('receipt_sha256')!=digest or claim.get('unit')!=unit or (_selected and claim.get('binding')!=_selected.binding):
++                raise ValueError('consumed claim binding changed')
++            handle=path/'live/launch-handle.json'
++            if handle.exists():
++                h=json.loads(handle.read_text())
++                if h.get('claim_sha256')!=hashlib.sha256((path/'runtime-claim.json').read_bytes()).hexdigest() or h.get('receipt_sha256')!=digest or h.get('unit')!=unit:
++                    raise ValueError('consumed handle/claim changed')
+     if require_confirmation:
+         if b.get('state')!='verified' or (not consumed and b.get('new_launch_authorized') is not True):
+             raise ValueError('PREPARE_ONLY; no active-slot launch authorization')
+         if not b.get('process') or not isinstance(b.get('pid'),int) or b['pid']<=0:raise ValueError('executing worker binding missing')
+-        source_confirmation47(b,manifest_path=path/'SOURCE-MANIFEST.json',digest=DIGEST49)
+-    return ActiveSlot(path,lease,dict(b),digest=DIGEST49)
++        if is59:source_confirmation59(b,path,digest)
++        else:source_confirmation47(b,manifest_path=path/'SOURCE-MANIFEST.json',digest=digest)
++    result=ActiveSlot(path,lease,dict(b),digest=digest)
++    if is59 and not consumed:fresh59(result)
++    return result
+ 
+ def main():
+-    lease = resolve_active_slot(require_confirmation=False).lease
+-    env = environment(lease)
+-    if sys.argv[1:] == ['--command']:
+-        print(json.dumps(command(lease, env), indent=2))
+-        return 0
+-    if sys.argv[1:] == ['--check']:
++    if sys.argv[1:] in (['--command'],['--check']):
++        lease = resolve_active_slot(require_confirmation=False).lease
++        env = environment(lease)
++        if sys.argv[1:] == ['--command']:
++            print(json.dumps(command(lease, env), indent=2))
++            return 0
+         return subprocess.run(['/usr/bin/python3', '-B', str(GUEST / '.start-xemu.py'), '--check'], cwd=GUEST, env=env).returncode
+     if sys.argv[1:]:
+         raise ValueError('unsupported CLI; no claim made')

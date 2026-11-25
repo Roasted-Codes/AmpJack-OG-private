@@ -1,0 +1,473 @@
+--- gipdrive.h ---
+--- work/21-lifecycle/parent-review/pre-correction/gipdrive.h	2026-11-24 22:11:18.672124030 -0500
++++ gipdriver/src/gipdrive.h	2026-11-24 22:16:59.559965164 -0500
+@@ -914,10 +914,13 @@
+ /* 0 => armed, 1 => refused (fail-closed). */
+ static int gdr_gip_arm_gate(unsigned int pins) { return (pins == GDR_PIN_ALL) ? 0 : 1; }
+ 
+-/* Loop cadence — shared so the host can drive 45 s of simulated time and
+- * assert the fail-closed path exits on time and never touches the device. */
++/* Loop cadence — shared so the host can drive simulated time and assert the
++ * fail-closed path exits on time and never touches the device. GDR_EXIT_AFTER_MS
++ * is the bounded auto-return watchdog: 6 minutes for the slice2 lifecycle probe
++ * so a 5-min / 3-cycle unplug-replug session fits in one run (manual BACK+START
++ * on a stock pad still exits sooner). */
+ #define GDR_TICK_MS         250u
+-#define GDR_EXIT_AFTER_MS   60000u
++#define GDR_EXIT_AFTER_MS   360000u   /* 6 min auto-return (lifecycle probe) */
+ #define GDR_HB_PERIOD_MS    30000u    /* backstop liveness (LIVE line is per-second) */
+ #define GDR_LIVE_PERIOD_MS  1000u     /* per-second LIVE line cadence */
+ 
+@@ -1148,8 +1151,11 @@
+     volatile u32 add_complete_called; /* AddComplete fired-exactly-once guard  */
+     long          add_status;         /* status signalled to AddComplete (last)*/
+     volatile u32 remove_complete_called; /* RemoveComplete acked (0/1)         */
+-    volatile u32 pending;             /* outstanding URBs (quiescence; saturates)*/
++    volatile u32 pending;             /* accepted-but-not-completed URBs (honest) */
+     volatile u32 cancel_count;        /* URBs cancelled via CancelRequest      */
++    volatile u32 open_pending;        /* 1 while open_urb has an accepted req  */
++    volatile u32 ctrl_pending;        /* 1 while ctrl_urb has an accepted req  */
++    volatile u32 removing_in_walk;    /* 1 during the remove cancel walk       */
+     gdr_add_complete_fn      add_complete;   /* Xbox: usbd_AddComplete          */
+     gdr_cancel_fn            cancel_request; /* Xbox: usbd_CancelRequest        */
+     gdr_remove_complete_fn   remove_complete;/* Xbox: usbd_RemoveComplete       */
+@@ -1161,6 +1167,7 @@
+ static void gdr_pending_enter(struct gdr_attach_ctx *ctx);
+ static void gdr_pending_leave(struct gdr_attach_ctx *ctx);
+ static void gdr_remove_try_complete(struct gdr_attach_ctx *ctx);
++static int  gdr_complete_enter(struct gdr_attach_ctx *ctx);
+ 
+ /* ---- structured ring events (RAW: no text built in the DPC) ------------- */
+ /* Each helper stores kind + small integers/bytes; the text line is built by
+@@ -1301,8 +1308,7 @@
+ static void GDR_STDCALL gdr_tx_complete(void *urb, void *ctxv) {
+     struct gdr_attach_ctx *ctx = (struct gdr_attach_ctx*)ctxv;
+     gdr_urb_transfer *u = (gdr_urb_transfer*)urb;
+-    gdr_pending_leave(ctx);
+-    if (ctx->detached) { gdr_remove_try_complete(ctx); return; }
++    if (!gdr_complete_enter(ctx)) return;
+     long status = (long)(int)u->Hdr.Status;     /* +0x04 TRUE status (not +0x24) */
+     u32  actual = u->TransferLength;            /* +0x14 completed OUT bytes     */
+     struct gdr_evt e; memset(&e, 0, sizeof e);
+@@ -1348,8 +1354,7 @@
+ static void GDR_STDCALL gdr_in_complete(void *urb, void *ctxv) {
+     struct gdr_attach_ctx *ctx = (struct gdr_attach_ctx*)ctxv;
+     gdr_urb_transfer *u = (gdr_urb_transfer*)urb;
+-    gdr_pending_leave(ctx);
+-    if (ctx->detached) { gdr_remove_try_complete(ctx); return; }
++    if (!gdr_complete_enter(ctx)) return;
+     long status = (long)(int)u->Hdr.Status;   /* +0x04 TRUE status   */
+     u32  actual = u->TransferLength;          /* +0x14 accumulated actual bytes (snapshot) */
+     u32  req    = gdr_in_mps(ctx);            /* requested size (endpoint mps) */
+@@ -1416,17 +1421,32 @@
+ /* AddComplete exactly-once, cancel->quiesce->RemoveComplete ordering).        */
+ /* ========================================================================== */
+ 
+-/* Pending-URB accounting: increment BEFORE every ctx->submit, decrement (a)
+- * on immediate rejection and (b) in every completion callback entry. Each
+- * submit has exactly one completion-or-reject, so the counter stays balanced
+- * on hardware and saturates at 0 under synthetic completion-without-submit. */
++/* Honest pending accounting. `pending` = number of URBs whose submit was
++ * ACCEPTED and whose completion has not yet arrived. It is incremented when a
++ * submit is accepted (the matching flag — open_pending / ctrl_pending /
++ * in_flight / tx_busy — is set at the same time) and decremented when that URB
++ * completes or when a cancel is REJECTED (a rejected cancel signals no later
++ * completion). No saturation: an unbalanced decrement shows up as a non-zero
++ * pending and is investigated, not hidden. */
+ static void gdr_pending_enter(struct gdr_attach_ctx *ctx) { ctx->pending++; }
+-static void gdr_pending_leave(struct gdr_attach_ctx *ctx) {
+-    if (ctx->pending) ctx->pending--;   /* saturating: never underflows */
++static void gdr_pending_leave(struct gdr_attach_ctx *ctx) { ctx->pending--; }
++
++/* Completion-callback prologue shared by every URB completion (steps + IN + OUT).
++ * Detached: this is a cancelled URB's completion — account it (unless the removal
++ * is already retired) and defer the RemoveComplete ack to the quiescence check.
++ * Not detached: decrement pending honestly and let the callback proceed. Returns
++ * 0 if the caller must return now, 1 to continue normal work. */
++static int gdr_complete_enter(struct gdr_attach_ctx *ctx) {
++    if (ctx->detached) {
++        if (!ctx->remove_complete_called) { ctx->pending--; gdr_remove_try_complete(ctx); }
++        return 0;
++    }
++    ctx->pending--;
++    return 1;
+ }
+ 
+-/* Ack removal: call RemoveComplete exactly once, then go IDLE. This is legal
+- * only after every outstanding URB has completed (verified by pending==0). */
++/* Ack removal: call RemoveComplete exactly once, then go IDLE. Legal only once
++ * the cancel walk has finished AND pending==0 (every accepted URB completed). */
+ static void gdr_remove_ack(struct gdr_attach_ctx *ctx) {
+     struct gdr_evt e;
+     if (ctx->remove_complete_called) return;
+@@ -1439,9 +1459,11 @@
+     if (ctx->remove_complete) ctx->remove_complete(ctx->device);
+ }
+ 
+-/* The RemoveComplete ack fires only once all URBs are quiesced. */
++/* The RemoveComplete ack fires only after the cancel walk is done AND every
++ * outstanding URB has completed. */
+ static void gdr_remove_try_complete(struct gdr_attach_ctx *ctx) {
+     if (!ctx->detached) return;
++    if (ctx->removing_in_walk) return;   /* defer ack until cancel walk done */
+     if (ctx->pending != 0) return;
+     gdr_remove_ack(ctx);
+ }
+@@ -1464,23 +1486,27 @@
+ }
+ 
+ /* RemoveDevice (the description's __stdcall(1) remove callback, invoked by the
+- * tree on disconnect). Invalidates state, stops new I/O, cancels the URBs that
+- * are outstanding for THIS generation, and lets their completions drive the
+- * RemoveComplete ack at quiescence. Idempotent (double-remove / no-context /
+- * mismatched device are no-ops). Save/clear in-flight flags BEFORE cancelling so
+- * the cancel targets reflect exactly what was pending at disconnect. */
++ * tree on disconnect). Invalidates state, stops new I/O, cancels ONLY the URBs
++ * that are actually-accepted-and-outstanding, and lets their completions drive
++ * the RemoveComplete ack at quiescence. A cancel whose return is negative is a
++ * REJECTION (no future completion) and is accounted immediately so RemoveComplete
++ * is not deferred forever. Idempotent (double-remove / no-context / mismatched
++ * device are no-ops). The cancel walk runs under removing_in_walk so a reentrant
++ * completion cannot ack RemoveComplete before the walk finishes. */
+ static void gdr_remove_device(struct gdr_attach_ctx *ctx, void *device) {
+     struct gdr_evt e;
+-    u32 was_state; u32 was_in_flight, was_tx_busy; u32 n_cancel = 0;
++    u32 was_open, was_ctrl, was_in, was_tx; u32 n_cancel = 0;
+ 
+     if (!ctx) return;                                   /* no context */
+     if (ctx->lifecycle == GDR_LIFE_IDLE) return;        /* never attached */
+     if (ctx->device != device) return;                  /* not our device */
+     if (ctx->detached) return;                          /* double remove */
+ 
+-    was_state      = ctx->state;
+-    was_in_flight  = ctx->in_flight;
+-    was_tx_busy    = (u32)ctx->tx_busy;
++    /* snapshot the ACTUAL active requests (open/ctrl/in/tx), NOT a state guess */
++    was_open = ctx->open_pending;
++    was_ctrl = ctx->ctrl_pending;
++    was_in   = ctx->in_flight ? 1u : 0u;
++    was_tx   = ctx->tx_busy  ? 1u : 0u;
+ 
+     /* invalidate: stop new I/O + neutralize handle reuse immediately */
+     ctx->detached   = 1;
+@@ -1491,6 +1517,8 @@
+     ctx->control_handle = 0;
+     ctx->in_flight  = 0;
+     ctx->tx_busy    = 0;
++    ctx->open_pending = 0;
++    ctx->ctrl_pending = 0;
+     ctx->tx_head = ctx->tx_tail = 0;   /* drop queued-but-unsent OUT frames */
+ 
+     memset(&e, 0, sizeof e);
+@@ -1498,19 +1526,32 @@
+     e.seq = ++ctx->seq;
+     gdr_ring_push(ctx->ring, &e);
+ 
+-    if (!ctx->cancel_request) { gdr_remove_ack(ctx); return; }
+-
+-    /* cancel the (at most three) outstanding URBs of this generation */
+-    if (was_state < 6u) {
+-        void *u = (was_state == 0 || was_state == 4 || was_state == 5)
+-                  ? (void*)&ctx->open_urb : (void*)&ctx->ctrl_urb;
+-        ctx->cancel_request(device, u); n_cancel++;
++    /* cancel walk: only URBs that were ACTUALLY active. A rejected cancel
++     * (r < 0) delivers no future completion, so drop it from pending now. */
++    ctx->removing_in_walk = 1;
++    if (ctx->cancel_request) {
++        if (was_open) {
++            long r = ctx->cancel_request(device, &ctx->open_urb); n_cancel++;
++            if (r < 0) ctx->pending--;
++        }
++        if (was_ctrl) {
++            long r = ctx->cancel_request(device, &ctx->ctrl_urb); n_cancel++;
++            if (r < 0) ctx->pending--;
++        }
++        if (was_in) {
++            long r = ctx->cancel_request(device, &ctx->in_urb); n_cancel++;
++            if (r < 0) ctx->pending--;
++        }
++        if (was_tx) {
++            long r = ctx->cancel_request(device, &ctx->tx_urb); n_cancel++;
++            if (r < 0) ctx->pending--;
++        }
+     }
+-    if (was_in_flight) { ctx->cancel_request(device, &ctx->in_urb); n_cancel++; }
+-    if (was_tx_busy)   { ctx->cancel_request(device, &ctx->tx_urb); n_cancel++; }
+     ctx->cancel_count += n_cancel;
++    ctx->removing_in_walk = 0;
+ 
+-    if (n_cancel == 0) gdr_remove_ack(ctx);   /* nothing outstanding: ack now */
++    /* ack now if nothing remains outstanding (e.g. failed attach had no URB) */
++    gdr_remove_try_complete(ctx);
+ }
+ 
+ /* STEPFAIL: negative URB status on a mandatory step (structured event). */
+@@ -1550,15 +1591,16 @@
+         long r;
+         gdr_pending_enter(ctx);
+         r = ctx->submit(ctx->device, u);
+-        if (r < 0) { gdr_pending_leave(ctx); gdr_step_fail(ctx, ctx->state, (u32)r); }
++        if (r < 0) { gdr_pending_leave(ctx); ctx->ctrl_pending = 0; gdr_step_fail(ctx, ctx->state, (u32)r); }
++        else ctx->ctrl_pending = 1;
+     }
+ }
+ 
+ static void GDR_STDCALL gdr_step_s0c(void *urb, void *ctxv) {
+     struct gdr_attach_ctx *ctx = (struct gdr_attach_ctx*)ctxv;
+     gdr_urb_open *u = (gdr_urb_open*)urb;
+-    gdr_pending_leave(ctx);
+-    if (ctx->detached) { gdr_remove_try_complete(ctx); return; }
++    if (!gdr_complete_enter(ctx)) return;
++    ctx->open_pending = 0;
+     if ((long)(int)u->Hdr.Status < 0) { gdr_step_fail(ctx, 0, u->Hdr.Status); return; }
+     ctx->control_handle = u->EndpointHandle;
+     ctx->state = 1;
+@@ -1570,8 +1612,8 @@
+     struct gdr_attach_ctx *ctx = (struct gdr_attach_ctx*)ctxv;
+     gdr_urb_control *u = (gdr_urb_control*)urb;
+     u32 wtotal;
+-    gdr_pending_leave(ctx);
+-    if (ctx->detached) { gdr_remove_try_complete(ctx); return; }
++    if (!gdr_complete_enter(ctx)) return;
++    ctx->ctrl_pending = 0;
+     if ((long)(int)u->Hdr.Status < 0) { gdr_step_fail(ctx, 1, u->Hdr.Status); return; }
+     wtotal = (u32)ctx->cfg_stage[2] | ((u32)ctx->cfg_stage[3] << 8);
+     if (wtotal < 9)  wtotal = 9;
+@@ -1585,8 +1627,8 @@
+     struct gdr_attach_ctx *ctx = (struct gdr_attach_ctx*)ctxv;
+     gdr_urb_control *u = (gdr_urb_control*)urb;
+     struct gdr_cfg_result r;
+-    gdr_pending_leave(ctx);
+-    if (ctx->detached) { gdr_remove_try_complete(ctx); return; }
++    if (!gdr_complete_enter(ctx)) return;
++    ctx->ctrl_pending = 0;
+     if ((long)(int)u->Hdr.Status < 0) { gdr_step_fail(ctx, 2, u->Hdr.Status); return; }
+     gdr_cfg_parse(ctx->cfg_buf, (int)ctx->cfg_len, &r);
+     if (!r.found) {
+@@ -1625,7 +1667,8 @@
+             long r;
+             gdr_pending_enter(ctx);
+             r = ctx->submit(ctx->device, c);
+-            if (r < 0) { gdr_pending_leave(ctx); gdr_step_fail(ctx, 2, (u32)r); }
++            if (r < 0) { gdr_pending_leave(ctx); ctx->ctrl_pending = 0; gdr_step_fail(ctx, 2, (u32)r); }
++            else ctx->ctrl_pending = 1;
+         }
+     }
+ }
+@@ -1633,8 +1676,8 @@
+ static void GDR_STDCALL gdr_step_s3(void *urb, void *ctxv) {
+     struct gdr_attach_ctx *ctx = (struct gdr_attach_ctx*)ctxv;
+     gdr_urb_control *c = (gdr_urb_control*)urb;   /* SET_CONFIGURATION URB */
+-    gdr_pending_leave(ctx);
+-    if (ctx->detached) { gdr_remove_try_complete(ctx); return; }
++    if (!gdr_complete_enter(ctx)) return;
++    ctx->ctrl_pending = 0;
+     if ((long)(int)c->Hdr.Status < 0) { gdr_step_fail(ctx, 3, c->Hdr.Status); return; }
+     ctx->state = 4;
+     /* OPEN_ENDPOINT IN (fn 0x02): caller sets +0x15 addr, +0x16 type, +0x17
+@@ -1655,7 +1698,8 @@
+             long r;
+             gdr_pending_enter(ctx);
+             r = ctx->submit(ctx->device, o);
+-            if (r < 0) { gdr_pending_leave(ctx); gdr_step_fail(ctx, 3, (u32)r); }
++            if (r < 0) { gdr_pending_leave(ctx); ctx->open_pending = 0; gdr_step_fail(ctx, 3, (u32)r); }
++            else ctx->open_pending = 1;
+         }
+     }
+ }
+@@ -1663,8 +1707,8 @@
+ static void GDR_STDCALL gdr_step_s4(void *urb, void *ctxv) {
+     struct gdr_attach_ctx *ctx = (struct gdr_attach_ctx*)ctxv;
+     gdr_urb_open *u = (gdr_urb_open*)urb;
+-    gdr_pending_leave(ctx);
+-    if (ctx->detached) { gdr_remove_try_complete(ctx); return; }
++    if (!gdr_complete_enter(ctx)) return;
++    ctx->open_pending = 0;
+     if ((long)(int)u->Hdr.Status < 0) { gdr_step_fail(ctx, 4, u->Hdr.Status); return; }
+     ctx->in_handle = u->EndpointHandle;
+     ctx->state = 5;
+@@ -1683,7 +1727,8 @@
+             long r;
+             gdr_pending_enter(ctx);
+             r = ctx->submit(ctx->device, o);
+-            if (r < 0) { gdr_pending_leave(ctx); gdr_step_fail(ctx, 4, (u32)r); }
++            if (r < 0) { gdr_pending_leave(ctx); ctx->open_pending = 0; gdr_step_fail(ctx, 4, (u32)r); }
++            else ctx->open_pending = 1;
+         }
+     }
+ }
+@@ -1691,8 +1736,8 @@
+ static void GDR_STDCALL gdr_step_s5(void *urb, void *ctxv) {
+     struct gdr_attach_ctx *ctx = (struct gdr_attach_ctx*)ctxv;
+     gdr_urb_open *u = (gdr_urb_open*)urb;
+-    gdr_pending_leave(ctx);
+-    if (ctx->detached) { gdr_remove_try_complete(ctx); return; }
++    if (!gdr_complete_enter(ctx)) return;
++    ctx->open_pending = 0;
+     if ((long)(int)u->Hdr.Status < 0) { gdr_step_fail(ctx, 5, u->Hdr.Status); return; }
+     ctx->out_handle = u->EndpointHandle;
+     if (!ctx->in_handle || !ctx->out_handle) { gdr_step_fail(ctx, 5, 0xc0000002u); return; }
+@@ -1702,6 +1747,10 @@
+      * enumeration is complete. Signal AddComplete(0) exactly once so the
+      * type-2 device leaves the pending list (USBD_DeviceEnumNextPending). */
+     gdr_signal_add_complete(ctx, 0);
++    /* the AddComplete seam may RE-ENTER removal (a synchronous disconnect) and
++     * detach/zero the handles. Re-check liveness/identity before arming the IN
++     * URB so a detached-generartion never submits. */
++    if (ctx->detached || !ctx->in_handle || !ctx->out_handle) return;
+ 
+     /* persistent interrupt IN URB (fn 0x41) */
+     {
+@@ -1736,10 +1785,19 @@
+ 
+ /* S0 — Attach(device). Runs in XInitDevices/Process (PASSIVE) context.
+  * Mirrors Stage4 @0x2b00b: open the DEFAULT CONTROL endpoint (fn 0x82) first,
+- * then the GET_DESCRIPTOR(config) chain. Everything else is completion-driven. */
+-static void gdr_attach_begin(struct gdr_attach_ctx *ctx, void *device,
+-                             gdr_submit_fn submit, struct gdr_ring *ring) {
++ * then the GET_DESCRIPTOR(config) chain. Everything else is completion-driven.
++ *
++ * FAIL-CLOSED: if a previous generation is still REMOVING (or any accepted URB
++ * is still outstanding), refuse to claim the device — return non-zero and leave
++ * the context untouched. One-controller scope does NOT justify clobbering a live
++ * context while old URBs are unquiesced; the caller signals AddComplete(<0) on
++ * the refused device. */
++static int gdr_attach_begin(struct gdr_attach_ctx *ctx, void *device,
++                            gdr_submit_fn submit, struct gdr_ring *ring) {
+     u32 i;
++    if (!ctx) return 1;
++    if (ctx->lifecycle == GDR_LIFE_REMOVING || ctx->pending != 0) return 1;
++
+     ctx->device = device;
+     ctx->submit = submit;
+     ctx->ring   = ring;
+@@ -1768,6 +1826,9 @@
+     ctx->remove_complete_called = 0;
+     ctx->pending      = 0;
+     ctx->cancel_count = 0;
++    ctx->open_pending = 0;
++    ctx->ctrl_pending = 0;
++    ctx->removing_in_walk = 0;
+     for (i = 0; i < GDR_TX_SLOTS; i++) { ctx->tx_len[i] = 0; for (u32 j = 0; j < 64; j++) ctx->tx_q[i][j] = 0; }
+     for (u32 j = 0; j < 64; j++) ctx->tx_buf[j] = 0;
+     for (u32 j = 0; j < 64; j++) ctx->rx_buf[j] = 0;
+@@ -1787,23 +1848,20 @@
+             /* immediate rejection of the control-endpoint open: this attach
+              * failed before any chain ran. Signal AddComplete(r) exactly once. */
+             gdr_pending_leave(ctx);
++            ctx->open_pending = 0;
+             gdr_step_fail(ctx, 0, (u32)r);
+-        }
++        } else ctx->open_pending = 1;
+     }
++    return 0;
+ }
+ 
+-/* Neutralize the decoded GIP snapshot + identity immediately (the "logical
+- * neutral/disconnected state" the acceptance requires on detach). Called by the
+- * main loop on a DETACH event, NOT from DPC context. Mirrors gdr_rx_status's
+- * turned-off reset so a replug streams fresh state rather than stale buttons. */
++/* Full decoder reset on generation transition (detach): reuse the SAME
++ * gdr_gip_init reset semantics so the decoded snapshot, identity, TX queue,
++ * sequence, and counters all clear together — a replug streams fresh state and
++ * any pre-unplug queued-but-unsent OUT frames are dropped. Called by the main
++ * loop on a DETACH event (NOT from DPC context); it sends no protocol frames. */
+ static void gdr_gip_neutralize(struct gdr_gip *m) {
+-    u32 i;
+-    m->identified = m->gamepad = m->ready = 0;
+-    m->fallback = m->s_init_pending = 0;
+-    m->snapshot_valid = 0;
+-    m->snap.buttons = 0;
+-    for (i = 0; i < 8; i++) m->snap.analog[i] = 0;
+-    m->snap.lx = m->snap.ly = m->snap.rx = m->snap.ry = 0;
++    gdr_gip_init(m, 0);
+ }
+ 
+ #endif /* GIPDRIVE_H */
+--- main.c ---
+--- work/21-lifecycle/parent-review/pre-correction/main.c	2026-11-24 22:11:18.673124027 -0500
++++ gipdriver/src/main.c	2026-11-24 22:17:04.549429031 -0500
+@@ -185,8 +185,21 @@
+     g_device = (u32)device;
+     g_attached = 1;
+     g_att.in_complete = (gdr_complete_fn)&gip_in_complete;
+-    gdr_attach_begin(&g_att, device, gip_submit, &g_ring);
+     g_att.cb_log = 1;   /* enable per-completion discriminator lines (CB kind=…) */
++    if (gdr_attach_begin(&g_att, device, gip_submit, &g_ring)) {
++        /* REFUSED: a previous generation is still quiescing (REMOVING / pending
++         * URBs). Fail-closed: do NOT clobber the live context; signal
++         * AddComplete(<0) for THIS device so the stack aborts its enumeration
++         * instead of leaving a claimed-idle device. */
++        LOG_LIT("ATTACH_REFUSED dev=0x");
++        {
++            char hline[16]; size_t hn = 0;
++            hn = gdr_hex_u(hline, sizeof hline, hn, (u32)(u32)device, 8);
++            hn = gdr_str(hline, sizeof hline, hn, "\n");
++            log_write(hline, hn);
++        }
++        g_att.add_complete(device, (long)(int)0xC0000001L);  /* STATUS_UNSUCCESSFUL */
++    }
+ }
+ 
+ /* ---- FindClassDriver Hook ---------------------------------------------- */
+@@ -353,10 +366,6 @@
+         g_now_ms += GDR_TICK_MS;
+         g_att.tick = g_now_ms;   /* coarse tick for completion-event tagging */
+ 
+-        /* transport is live ONLY when Attach ran AND the interrupt IN endpoint
+-         * opened. On the fail-closed (PINFAIL) path Attach never runs. */
+-        int transport = gdr_transport_live(g_attached, g_att.in_handle);
+-
+         /* drain event ring with the safe single-producer/consumer handoff
+          * (gdr_ring_pop), so a concurrent DPC push can never overwrite an
+          * event the main loop is about to read (the legacy gdr_ring_drain
+@@ -380,12 +389,23 @@
+                      * completion queues the follow-up S-init exactly once. */
+                     gdr_gip_on_power_done(&g_gip);
+                 } else if (ev.kind == GDR_EVT_DETACH) {
+-                    /* device removed: neutralize the decoded snapshot + identity
+-                     * NOW (main-loop context, not DPC) so the caller observes an
+-                     * immediate logical neutral/disconnected state and a replug
+-                     * cannot leak stale buttons; reset the STATE diff baseline. */
++                    /* device removed: full decoder reset (snapshot + identity +
++                     * TX queue + sequence) in main-loop context, then EMIT the
++                     * neutral/disconnected STATE once (the STATE block below only
++                     * logs on snapshot_valid, which is now 0), and clear the
++                     * generation-scoped flags so a replug cannot inherit green
++                     * or a stale device identity from the previous generation. */
+                     gdr_gip_neutralize(&g_gip);
+                     memset(&last_snap, 0, sizeof last_snap);
++                    {
++                        char sline[128]; size_t sn = gdr_format_state(sline, sizeof sline, &g_gip.snap);
++                        LOG_LIT("STATE ");
++                        log_write(sline, sn);
++                        log_write("\n", 1);
++                    }
++                    g_input_seen = 0;
++                    g_device = 0;
++                    g_attached = 0;
+                 }
+                 if (do_log) {
+                     char line[256]; size_t ln = gdr_format_event(line, sizeof line, &ev);
+@@ -394,6 +414,12 @@
+             }
+         }
+ 
++        /* transport is live ONLY when Attach ran AND the interrupt IN endpoint
++         * opened. Re-evaluated AFTER draining events: a DETACH drained in this
++         * pass zeroes in_handle, so the qualified startup / OUT submit below
++         * can never run for a stale (previous) generation. */
++        int transport = gdr_transport_live(g_attached, g_att.in_handle);
++
+         /* GIP poll (no-op hook) + bridge the state machine's TX queue into the
+          * OUT queue, then submit the next OUT frame. Startup is explicit: the
+          * qualified wired path fires once here (state 6), never a blind poll. */
+@@ -504,7 +530,7 @@
+             else bs_held=0;
+         }
+ 
+-        /* auto-exit after 60 s */
++        /* auto-return watchdog (6 min for the lifecycle probe) */
+         if (g_now_ms >= GDR_EXIT_AFTER_MS) goto do_exit;
+ 
+         log_flush();

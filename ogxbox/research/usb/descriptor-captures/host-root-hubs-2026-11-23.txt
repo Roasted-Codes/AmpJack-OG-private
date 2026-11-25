@@ -1,0 +1,75 @@
+==============================================================================
+Device 1-7           8087:0aa7  bus speed=12 Mbps (full)  
+  sysfs version (bcdUSB) = 2.00
+  Device Descriptor: bcdUSB=0x0200 class/sub/proto=224/1/1 bMaxPacketSize0=64 idVendor:idProduct=8087:0aa7 bcdDevice=0x0001 nConfigs=1
+  Configuration: bConfigurationValue=1 bNumInterfaces=2 bMaxPower=100 mA  (wTotalLength=177)
+    Interface 0 alt 0: class/sub/proto=0xE0/0x01/0x01 endpoints=3
+    Interface 1 alt 0: class/sub/proto=0xE0/0x01/0x01 endpoints=2
+    Interface 1 alt 1: class/sub/proto=0xE0/0x01/0x01 endpoints=2
+    Interface 1 alt 2: class/sub/proto=0xE0/0x01/0x01 endpoints=2
+    Interface 1 alt 3: class/sub/proto=0xE0/0x01/0x01 endpoints=2
+    Interface 1 alt 4: class/sub/proto=0xE0/0x01/0x01 endpoints=2
+    Interface 1 alt 5: class/sub/proto=0xE0/0x01/0x01 endpoints=2
+      EP 0x81 IN: interrupt wMaxPacketSize=64 bInterval=1
+      EP 0x02 OUT: bulk wMaxPacketSize=64 bInterval=1
+      EP 0x82 IN: bulk wMaxPacketSize=64 bInterval=1
+      EP 0x03 OUT: isochronous wMaxPacketSize=0 bInterval=1
+      EP 0x83 IN: isochronous wMaxPacketSize=0 bInterval=1
+      EP 0x03 OUT: isochronous wMaxPacketSize=9 bInterval=1
+      EP 0x83 IN: isochronous wMaxPacketSize=9 bInterval=1
+      EP 0x03 OUT: isochronous wMaxPacketSize=17 bInterval=1
+      EP 0x83 IN: isochronous wMaxPacketSize=17 bInterval=1
+      EP 0x03 OUT: isochronous wMaxPacketSize=25 bInterval=1
+      EP 0x83 IN: isochronous wMaxPacketSize=25 bInterval=1
+      EP 0x03 OUT: isochronous wMaxPacketSize=33 bInterval=1
+      EP 0x83 IN: isochronous wMaxPacketSize=33 bInterval=1
+      EP 0x03 OUT: isochronous wMaxPacketSize=49 bInterval=1
+      EP 0x83 IN: isochronous wMaxPacketSize=49 bInterval=1
+==============================================================================
+Device usb1          1d6b:0002  bus speed=480 Mbps (high)  xHCI Host Controller
+  sysfs version (bcdUSB) = 2.00
+  manufacturer = Linux 7.3.5-2-cachyos xhci-hcd
+  Device Descriptor: bcdUSB=0x0200 class/sub/proto=9/0/1 bMaxPacketSize0=64 idVendor:idProduct=1d6b:0002 bcdDevice=0x0703 nConfigs=1
+  Configuration: bConfigurationValue=1 bNumInterfaces=1 bMaxPower=0 mA  (wTotalLength=25)
+    Interface 0 alt 0: class/sub/proto=0x09/0x00/0x00 endpoints=1
+      EP 0x81 IN: interrupt wMaxPacketSize=4 bInterval=12
+==============================================================================
+Device usb2          1d6b:0003  bus speed=10000 Mbps (super+(10G))  xHCI Host Controller
+  sysfs version (bcdUSB) = 3.10
+  manufacturer = Linux 7.3.5-2-cachyos xhci-hcd
+  Device Descriptor: bcdUSB=0x0310 class/sub/proto=9/0/3 bMaxPacketSize0=9 idVendor:idProduct=1d6b:0003 bcdDevice=0x0703 nConfigs=1
+  Configuration: bConfigurationValue=1 bNumInterfaces=1 bMaxPower=0 mA  (wTotalLength=31)
+    Interface 0 alt 0: class/sub/proto=0x09/0x00/0x00 endpoints=1
+      EP 0x81 IN: interrupt wMaxPacketSize=2 bInterval=12
+==============================================================================
+Device usb3          1d6b:0002  bus speed=480 Mbps (high)  xHCI Host Controller
+  sysfs version (bcdUSB) = 2.00
+  manufacturer = Linux 7.3.5-2-cachyos xhci-hcd
+  Device Descriptor: bcdUSB=0x0200 class/sub/proto=9/0/1 bMaxPacketSize0=64 idVendor:idProduct=1d6b:0002 bcdDevice=0x0703 nConfigs=1
+  Configuration: bConfigurationValue=1 bNumInterfaces=1 bMaxPower=0 mA  (wTotalLength=25)
+    Interface 0 alt 0: class/sub/proto=0x09/0x00/0x00 endpoints=1
+      EP 0x81 IN: interrupt wMaxPacketSize=4 bInterval=12
+==============================================================================
+Device usb4          1d6b:0003  bus speed=10000 Mbps (super+(10G))  xHCI Host Controller
+  sysfs version (bcdUSB) = 3.10
+  manufacturer = Linux 7.3.5-2-cachyos xhci-hcd
+  Device Descriptor: bcdUSB=0x0310 class/sub/proto=9/0/3 bMaxPacketSize0=9 idVendor:idProduct=1d6b:0003 bcdDevice=0x0703 nConfigs=1
+  Configuration: bConfigurationValue=1 bNumInterfaces=1 bMaxPower=0 mA  (wTotalLength=31)
+    Interface 0 alt 0: class/sub/proto=0x09/0x00/0x00 endpoints=1
+      EP 0x81 IN: interrupt wMaxPacketSize=2 bInterval=12
+==============================================================================
+Device usb5          1d6b:0002  bus speed=480 Mbps (high)  xHCI Host Controller
+  sysfs version (bcdUSB) = 2.00
+  manufacturer = Linux 7.3.5-2-cachyos xhci-hcd
+  Device Descriptor: bcdUSB=0x0200 class/sub/proto=9/0/1 bMaxPacketSize0=64 idVendor:idProduct=1d6b:0002 bcdDevice=0x0703 nConfigs=1
+  Configuration: bConfigurationValue=1 bNumInterfaces=1 bMaxPower=0 mA  (wTotalLength=25)
+    Interface 0 alt 0: class/sub/proto=0x09/0x00/0x00 endpoints=1
+      EP 0x81 IN: interrupt wMaxPacketSize=4 bInterval=12
+==============================================================================
+Device usb6          1d6b:0003  bus speed=10000 Mbps (super+(10G))  xHCI Host Controller
+  sysfs version (bcdUSB) = 3.10
+  manufacturer = Linux 7.3.5-2-cachyos xhci-hcd
+  Device Descriptor: bcdUSB=0x0310 class/sub/proto=9/0/3 bMaxPacketSize0=9 idVendor:idProduct=1d6b:0003 bcdDevice=0x0703 nConfigs=1
+  Configuration: bConfigurationValue=1 bNumInterfaces=1 bMaxPower=0 mA  (wTotalLength=31)
+    Interface 0 alt 0: class/sub/proto=0x09/0x00/0x00 endpoints=1
+      EP 0x81 IN: interrupt wMaxPacketSize=2 bInterval=12

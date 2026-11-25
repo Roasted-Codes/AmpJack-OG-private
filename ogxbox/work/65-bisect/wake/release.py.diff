@@ -1,0 +1,11 @@
+--- W43/release.py
++++ wake/release.py
+@@ -42,7 +42,7 @@
+  (c/'manifest.json').write_bytes((out/'manifest.json').read_bytes())
+  sums=''.join(B.sha((c/n).read_bytes())+'  '+n+'\n' for n in sorted(ALLOW-{'SHA256SUMS'}))
+  (c/'SHA256SUMS').write_text(sums)
+- archive=out/'AmpJack43-u803-candidate.zip'
++ archive=out/'AmpJack65W-u803.zip'
+  with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=9) as z:
+   for name in sorted(ALLOW):
+    item=zipfile.ZipInfo(name,(2026,1,1,0,0,0));item.external_attr=0o100644<<16;item.compress_type=zipfile.ZIP_DEFLATED

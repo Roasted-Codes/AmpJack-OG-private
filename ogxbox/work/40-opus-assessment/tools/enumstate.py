@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""Read-only decode of worker35 probe3 XPP enum data page (0x490000). Writes nothing."""
+import struct, sys
+p = sys.argv[1]
+d = open(p, 'rb').read()
+for a in (0x8b0, 0x8b1, 0x8b2, 0x8b3, 0x928):
+    print(hex(0x490000 + a), 'byte', hex(d[a]))
+for a in (0x92c, 0x930, 0x900, 0x904, 0x908, 0x90c, 0x910, 0x914, 0x918, 0x91c, 0x920, 0x8e4, 0x8e8, 0x8ec, 0x8f0):
+    print(hex(0x490000 + a), 'dword', hex(struct.unpack_from('<I', d, a)[0]))
+print('desc@0x490934', d[0x934:0x946].hex())

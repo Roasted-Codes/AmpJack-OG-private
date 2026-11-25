@@ -1,0 +1,120 @@
+49a50,54
+> # F6 critical span (work/32): the title's own kernel import SLOTS the module calls
+> # through. Ordinals pinned from the frozen XBE thunk table + XDK 5849 xboxkrnl.lib
+> # import records (work/32 tools/pin_irql.py): 129 _KeRaiseIrqlToDpcLevel@0 (stdcall),
+> # 161 @KfLowerIrql@4 (fastcall, CL). Required for any layout that declares them.
+> IRQL_SLOTS = {'irql_raise_slot': (0x0041B700, 129), 'irql_lower_slot': (0x0041B6FC, 161)}
+249a255,260
+>         has = [k in names for k in IRQL_SLOTS]
+>         _need(all(has) or not any(has), 'layout declares only one IRQL slot field')
+>         self.has_irql = all(has)
+>         if self.has_irql:
+>             _need(set(L.get('irql_abi', {})) == set(IRQL_SLOTS), 'layout IRQL fields lack irql_abi')
+>             _need(L['now_ms_abi'] == 'stdcall_u32', 'IRQL-span layout must publish now_ms as stdcall_u32')
+334a346,362
+>     def _thunk_ordinal(self, slot_va):
+>         thunk = struct.unpack_from('<I', self.raw, 0x158)[0] ^ 0x5B6D40B6   # retail key
+>         _need(thunk <= slot_va < thunk + 0x400 and (slot_va - thunk) % 4 == 0, 'slot not in thunk table')
+>         i = thunk
+>         while struct.unpack('<I', self.read(i, 4))[0]:
+>             i += 4
+>         _need(slot_va < i, 'slot past thunk terminator')
+>         return struct.unpack('<I', self.read(slot_va, 4))[0]
+> 
+>     def verify_irql_slot(self, field, slot_va):
+>         """F6 span: the injected value is the pinned import SLOT whose frozen thunk
+>         word is 0x80000000|ordinal (129 raise / 161 lower)."""
+>         want_va, ordinal = IRQL_SLOTS[field]
+>         _need(slot_va == want_va, f'{field}={slot_va:#x} != pinned {want_va:#x}')
+>         _need(self._thunk_ordinal(slot_va) == 0x80000000 | ordinal, f'{field} slot ordinal mismatch')
+>         return slot_va
+> 
+409a438,440
+>         if self.m.has_irql:
+>             for k, (va, _o) in IRQL_SLOTS.items():
+>                 out[k] = self.p.verify_irql_slot(k, b.get(k, va))
+449a481,484
+>         if self.m.has_irql:     # kernel loader must have resolved both import slots
+>             for k, (va, ordinal) in IRQL_SLOTS.items():
+>                 live = struct.unpack('<I', mem.read(va, 4))[0]
+>                 _need(live != 0 and live != 0x80000000 | ordinal, f'{k} import slot unresolved live ({live:#x})')
+98,99c98,99
+<         inst = host + LAYOUT['status_fields']['installed_hooks']
+<         fail = host + LAYOUT['status_fields']['install_failed']
+---
+>         inst = host + m.layout['status_fields']['installed_hooks']
+>         fail = host + m.layout['status_fields']['install_failed']
+105c105
+<             self.write(inst, struct.pack('<I', LAYOUT['expected_installed_hooks']))
+---
+>             self.write(inst, struct.pack('<I', m.layout['expected_installed_hooks']))
+380a381,449
+> 
+> 
+> class T32(unittest.TestCase):
+>     """work/32 combined ELF (F6 IRQL span). FIXTURE allocation only (FIX_BASE is
+>     arithmetic, not a claim the address is free); FakeTitle is a test double."""
+>     ELF32 = OG / 'work/32-opus-final-integration/artifact/pic.elf'
+>     LAY32 = json.loads((OG / 'work/32-opus-final-integration/artifact/layout.json').read_text())
+>     RESOLVED = {0x41B700: 0x8003C1A0, 0x41B6FC: 0x8003C1C0}   # FIXTURE kernel addresses
+> 
+>     def setUp(self):
+>         import tempfile
+>         self.j = Path(tempfile.mkdtemp(dir='/home/roasted/.hermes/cache/scratch')) / 'journal.json'
+> 
+>     def mod(self, **lay):
+>         return L.Module(self.ELF32.read_bytes(), dict(copy.deepcopy(self.LAY32), **lay))
+> 
+>     def ft(self, resolve=True):
+>         ft = FakeTitle(extent=0x9000)
+>         if 0x41B6FC not in range(0x4127A0, 0x4127A0 + len(ft.regions[0x4127A0])):
+>             ft.regions[0x41B600] = bytearray(PINS.read(0x41B600, 0x264))
+>         if resolve:
+>             for va, v in self.RESOLVED.items():
+>                 ft.write(va, struct.pack('<I', v))
+>             ft.writes.clear()
+>         return ft
+> 
+>     def test_w32_layout_bound_and_irql_required(self):
+>         m = self.mod()
+>         self.assertTrue(m.has_irql)
+>         self.assertEqual(m.symbols['ogx_g_module']['size'], self.LAY32['module_size'])
+>         with self.assertRaisesRegex(L.LoaderError, 'no published layout'):
+>             L.Module(self.ELF32.read_bytes(), copy.deepcopy(LAYOUT))       # loader27 baseline layout refused
+>         one = [f for f in self.LAY32['host_fields'] if f[0] != 'irql_lower_slot']
+>         with self.assertRaisesRegex(L.LoaderError, 'only one IRQL'):
+>             self.mod(host_fields=one)
+>         with self.assertRaisesRegex(L.LoaderError, 'stdcall_u32'):
+>             self.mod(now_ms_abi='cdecl_u64')
+> 
+>     def test_w32_irql_bindings_pinned(self):
+>         tl = L.TitleLoader(self.mod(), PINS, dict(BINDINGS))
+>         self.assertEqual((tl.host['irql_raise_slot'], tl.host['irql_lower_slot']), (0x41B700, 0x41B6FC))
+>         for k, v, msg in [('irql_raise_slot', 0x41B6FC, 'pinned'), ('irql_lower_slot', 0x41B774, 'pinned')]:
+>             with self.subTest(k), self.assertRaisesRegex(L.LoaderError, msg):
+>                 L.TitleLoader(self.mod(), PINS, dict(BINDINGS, **{k: v}))
+>         saved = L.IRQL_SLOTS['irql_raise_slot']
+>         try:
+>             L.IRQL_SLOTS['irql_raise_slot'] = (0x41B700, 130)    # wrong ordinal for this slot
+>             with self.assertRaisesRegex(L.LoaderError, 'ordinal mismatch'):
+>                 PINS.verify_irql_slot('irql_raise_slot', 0x41B700)
+>         finally:
+>             L.IRQL_SLOTS['irql_raise_slot'] = saved
+> 
+>     def test_w32_fixture_load_serializes_irql_fields(self):
+>         tl = L.TitleLoader(self.mod(), PINS, dict(BINDINGS))
+>         ft = self.ft()
+>         ft.module, ft.base = tl.m, FIX_BASE
+>         res = tl.load(ft, receipt(extent=0x9000), self.j)
+>         self.assertEqual(res['verdict'], 'installed')
+>         host = FIX_BASE + tl.m.module_off + self.LAY32['host_offset']
+>         got = {f: struct.unpack('<I', ft.read(host + o, 4))[0] for f, o in self.LAY32['host_fields']}
+>         self.assertEqual((got['irql_raise_slot'], got['irql_lower_slot'], got['now_ms']), (0x41B700, 0x41B6FC, 0))
+> 
+>     def test_w32_unresolved_slot_refused_before_write(self):
+>         tl = L.TitleLoader(self.mod(), PINS, dict(BINDINGS))
+>         ft = self.ft(resolve=False)                    # thunk still 0x80000081 / 0x800000A1
+>         ft.module, ft.base = tl.m, FIX_BASE
+>         with self.assertRaisesRegex(L.LoaderError, 'unresolved live'):
+>             tl.load(ft, receipt(extent=0x9000), self.j)
+>         self.assertEqual((ft.writes, ft.calls), ([], []))

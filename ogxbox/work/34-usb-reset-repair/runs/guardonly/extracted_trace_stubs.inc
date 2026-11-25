@@ -1,0 +1,5 @@
+#define trace_usb_ohci_async_complete(...) ((void)0)
+#define trace_usb_ohci_ed_pkt(...) ((void)0)
+#define trace_usb_ohci_ed_pkt_flags(...) ((void)0)
+#define trace_usb_ohci_ed_read_error(...) ((void)0)
+#define trace_usb_ohci_port_detach(...) ((void)0)

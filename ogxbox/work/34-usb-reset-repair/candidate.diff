@@ -1,0 +1,32 @@
+--- a/hw/usb/hcd-ohci.c	2026-11-25 01:22:17.483448918 -0500
++++ b/hw/usb/hcd-ohci.c	2026-11-25 01:22:17.483602699 -0500
+@@ -300,8 +300,15 @@
+     int i, j;
+ 
+     if (ohci->async_td) {
+-        usb_cancel_packet(&ohci->usb_packet);
++        /*
++         * A completed packet stays owned by async_td until its TD is
++         * retired; only a packet still in flight can be cancelled.
++         */
++        if (usb_packet_is_inflight(&ohci->usb_packet)) {
++            usb_cancel_packet(&ohci->usb_packet);
++        }
+         ohci->async_td = 0;
++        ohci->async_complete = false;
+     }
+     for (i = 0; i < ohci->num_ports; i++) {
+         dev = ohci->rhport[i].port.dev;
+@@ -1135,8 +1142,11 @@
+             /* Cancel pending packets for ED that have been paused. */
+             addr = ed.head & OHCI_DPTR_MASK;
+             if (ohci->async_td && addr == ohci->async_td) {
+-                usb_cancel_packet(&ohci->usb_packet);
++                if (usb_packet_is_inflight(&ohci->usb_packet)) {
++                    usb_cancel_packet(&ohci->usb_packet);
++                }
+                 ohci->async_td = 0;
++                ohci->async_complete = false;
+                 usb_device_ep_stopped(ohci->usb_packet.ep->dev,
+                                       ohci->usb_packet.ep);
+             }

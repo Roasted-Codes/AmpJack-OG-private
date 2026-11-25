@@ -1,0 +1,32 @@
+--- /home/roasted/Desktop/Xbox/AmpJack-OG/ogxbox/work/65-bisect/baseline/src/ogxbox/gipdriver/src/gipdrive.h
++++ /home/roasted/Desktop/Xbox/AmpJack-OG/ogxbox/work/65-bisect/wake/src/ogxbox/gipdriver/src/gipdrive.h
+@@ -554,6 +554,8 @@
+     u8   txlen[8];
+     u32  txh, txt, tx_dropped;
+     int  turned_off;
++    u32  announces;             /* W63: every ANNOUNCE frame seen (any len)   */
++    u32  rehandshakes;          /* W63: wired re-handshakes started by ANNOUNCE */
+ };
+ 
+ /* init: activate the state machine. Power-on is sent on the first poll tick
+@@ -660,6 +662,20 @@
+ 
+ static void gdr_rx_announce(struct gdr_gip *m, const u8 *data, u32 len) {
+     u8 buf[64]; int n;
++    m->announces++;                         /* W63: count BEFORE the len check */
++    if (m->fallback && m->identified) {
++        /* W63 (W1): a wired pad qualified at attach that later wakes and
++         * ANNOUNCES got no reply before (identified already set), so it kept
++         * flashing. Re-run the minimal wired startup: a fresh power-on now,
++         * S-init on its successful OUT completion (gdr_gip_on_power_done).
++         * The snapshot is kept; no timer, no periodic resend. */
++        n = gdr_build_power_on(buf, gdr_next_seq(m));
++        if (gdr_tx_send(m, buf, n)) m->s_init_pending = 1;
++        m->ready = 1;
++        m->rehandshakes++;
++        m->did_announce = 1;
++        return;
++    }
+     if (len != 28) return;
+     if (!m->vendor && !m->product) {
+         m->vendor  = GDR_LE16(data + 8);

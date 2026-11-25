@@ -1,0 +1,902 @@
+diff -ruN -x out orig/ogxbox/gipdriver/src/gipdrive.h src/ogxbox/gipdriver/src/gipdrive.h
+--- orig/ogxbox/gipdriver/src/gipdrive.h	2026-11-25 15:28:06.488889931 -0500
++++ src/ogxbox/gipdriver/src/gipdrive.h	2026-11-25 15:34:55.690417441 -0500
+@@ -554,6 +554,8 @@
+     u8   txlen[8];
+     u32  txh, txt, tx_dropped;
+     int  turned_off;
++    u32  announces;             /* W63: every ANNOUNCE frame seen (any len)   */
++    u32  rehandshakes;          /* W63: wired re-handshakes started by ANNOUNCE */
+ };
+ 
+ /* init: activate the state machine. Power-on is sent on the first poll tick
+@@ -660,6 +662,20 @@
+ 
+ static void gdr_rx_announce(struct gdr_gip *m, const u8 *data, u32 len) {
+     u8 buf[64]; int n;
++    m->announces++;                         /* W63: count BEFORE the len check */
++    if (m->fallback && m->identified) {
++        /* W63 (W1): a wired pad qualified at attach that later wakes and
++         * ANNOUNCES got no reply before (identified already set), so it kept
++         * flashing. Re-run the minimal wired startup: a fresh power-on now,
++         * S-init on its successful OUT completion (gdr_gip_on_power_done).
++         * The snapshot is kept; no timer, no periodic resend. */
++        n = gdr_build_power_on(buf, gdr_next_seq(m));
++        if (gdr_tx_send(m, buf, n)) m->s_init_pending = 1;
++        m->ready = 1;
++        m->rehandshakes++;
++        m->did_announce = 1;
++        return;
++    }
+     if (len != 28) return;
+     if (!m->vendor && !m->product) {
+         m->vendor  = GDR_LE16(data + 8);
+diff -ruN -x out orig/ogxbox/halo2/xinput_model.c src/ogxbox/halo2/xinput_model.c
+--- orig/ogxbox/halo2/xinput_model.c	2026-11-25 15:28:06.488791101 -0500
++++ src/ogxbox/halo2/xinput_model.c	2026-11-25 15:34:55.691413103 -0500
+@@ -26,7 +26,8 @@
+ 	caps->Gamepad.sThumbRX = 0;
+ 	caps->Gamepad.sThumbRY = 0;
+ 
+-	/* Rumble: NOT supported this milestone (no motors). Deliberately 0. */
+-	caps->Vibration.wLeftMotorSpeed  = 0;
+-	caps->Vibration.wRightMotorSpeed = 0;
++	/* W63: rumble is forwarded to the GIP pad; report both motors like a
++	 * stock pad. Whether Halo 2 gates rumble on caps is NOT known. */
++	caps->Vibration.wLeftMotorSpeed  = 0xFFFF;
++	caps->Vibration.wRightMotorSpeed = 0xFFFF;
+ }
+diff -ruN -x out orig/ogxbox/integration/build_pic.sh src/ogxbox/integration/build_pic.sh
+--- orig/ogxbox/integration/build_pic.sh	2026-11-25 15:28:06.488178550 -0500
++++ src/ogxbox/integration/build_pic.sh	2026-11-25 15:34:55.705024080 -0500
+@@ -33,13 +33,14 @@
+ $CLANG $CFLAGS $INC -c ../halo2/xinput_model.c -o out/xinput_model.o
+ $CLANG $CFLAGS $INC -c ogx_transport.c -o out/ogx_transport.o
+ $CLANG $CFLAGS $INC -c ogx_install.c   -o out/ogx_install.o
+-$CLANG $CFLAGS $INC -c module_main.c   -o out/module_main.o
++$CLANG $CFLAGS $INC -DOGX_BUILD_TAG=\"${OGX_BUILD_TAG:-W63}\" -c module_main.c   -o out/module_main.o
++$CLANG $CFLAGS $INC -c ogx_log.c       -o out/ogx_log.o
+ $CLANG $CFLAGS $INC -c trampoline.S    -o out/trampoline.o
+ 
+ $LLD $LDFLAGS -Map out/pic.map -o out/pic.elf \
+     out/crt0.o out/string.o out/ogx_present.o out/ogx_stub.o \
+     out/xinput_model.o out/ogx_transport.o out/ogx_install.o \
+-    out/module_main.o out/trampoline.o
++    out/module_main.o out/ogx_log.o out/trampoline.o
+ 
+ echo "== relocation audit: only R_386_RELATIVE allowed, no TEXTREL =="
+ readelf -r out/pic.elf
+diff -ruN -x out orig/ogxbox/integration/crt0.c src/ogxbox/integration/crt0.c
+--- orig/ogxbox/integration/crt0.c	2026-11-25 15:28:06.488178550 -0500
++++ src/ogxbox/integration/crt0.c	2026-11-25 15:34:55.694756267 -0500
+@@ -1,10 +1,10 @@
+ /* SPDX-License-Identifier: GPL-3.0-or-later */
+ /* Module start. */
+-extern int ogx_module_main(void);
++extern int ogx_module_main_flags(unsigned int flags);
+ 
++/* W63: the cdecl argument is the loader's option word (bit0 = write log). */
+ __attribute__((section(".text.entry"), used))
+-int ogx_module_entry(void *unused)
++int ogx_module_entry(unsigned int flags)
+ {
+-	(void)unused;
+-	return ogx_module_main();
++	return ogx_module_main_flags(flags);
+ }
+diff -ruN -x out orig/ogxbox/integration/module_main.c src/ogxbox/integration/module_main.c
+--- orig/ogxbox/integration/module_main.c	2026-11-25 15:28:06.488178550 -0500
++++ src/ogxbox/integration/module_main.c	2026-11-25 15:34:55.695053617 -0500
+@@ -12,10 +12,21 @@
+  * 0 and is raised ONLY when a real USB attach opens the interrupt IN endpoint.
+  */
+ #include "ogx_module.h"
++#include "ogx_log.h"
+ 
+-int ogx_module_main(void)
++#ifndef OGX_BUILD_TAG
++#define OGX_BUILD_TAG "W63-dev"
++#endif
++
++int ogx_module_main(void);
++int ogx_module_main(void) { return ogx_module_main_flags(0); }
++
++int ogx_module_main_flags(uint32_t flags)
+ {
+ 	int rc;
++	struct ogx_log_line l;
++
++	ogx_log_init(flags);        /* memory only; the file opens lazily in the pump */
+ 
+ 	/* wire the presentation ctx + transport seams + GIP class description.
+ 	 * host pointers (ogx_g_module.host) were injected by the loader first. */
+@@ -25,6 +36,14 @@
+ 	 * Refuses (rolls back) on wrong original bytes / missing required surface. */
+ 	rc = ogx_install_hooks();
+ 
++	ogx_ll_begin(&l, "BOOT");
++	ogx_ll_str(&l, "tag", OGX_BUILD_TAG);
++	ogx_ll_hex(&l, "flags", flags);
++	ogx_ll_hex(&l, "installed_hooks", ogx_g_module.installed_hooks);
++	ogx_ll_dec(&l, "install_failed", ogx_g_module.install_failed);
++	ogx_ll_dec(&l, "rc", (uint32_t)rc);
++	ogx_ll_end(&l);
++
+ 	/* rc < 0 => fail-closed: no gamepad, stock classes untouched. rc == 0 =>
+ 	 * hooks armed; a hotplug (pad present, or plugged after install) enumerates
+ 	 * through our className driver and the six hooks serve virtual XInput. */
+diff -ruN -x out orig/ogxbox/integration/ogx_log.c src/ogxbox/integration/ogx_log.c
+--- orig/ogxbox/integration/ogx_log.c	1969-12-31 19:00:00.000000000 -0500
++++ src/ogxbox/integration/ogx_log.c	2026-11-25 15:33:30.626075611 -0500
+@@ -0,0 +1,215 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later */
++/* ogx_log.c -- see ogx_log.h. */
++#include "ogx_log.h"
++#include "../gipdriver/src/gipdrive.h"   /* gdr_str / gdr_dec / gdr_hex_u */
++
++struct ogx_log_state ogx_log_st;
++static uint32_t ogx_log_handle;
++static char     ogx_log_buf[OGX_LOG_BUF];
++
++#if __STDC_HOSTED__
++const struct ogx_log_io *ogx_log_io_hooks;
++volatile uint32_t ogx_log_fake_tick;
++
++uint32_t ogx_log_ms(void) { return ogx_log_fake_tick; }
++static uint32_t k_irql(void)
++{
++	return (ogx_log_io_hooks && ogx_log_io_hooks->irql) ? ogx_log_io_hooks->irql() : 0u;
++}
++static long k_create(uint32_t *h)
++{
++	if (!ogx_log_io_hooks || !ogx_log_io_hooks->create)
++		return (long)(int)0xC0000001u;
++	return ogx_log_io_hooks->create(h, OGX_LOG_PATH, 0x40100000u, 0x80u, 1u, 5u, 0x60u);
++}
++static long k_write(uint32_t h, const void *b, uint32_t n, uint32_t off)
++{
++	return ogx_log_io_hooks->write(h, b, n, off);
++}
++static long k_flush(uint32_t h) { return ogx_log_io_hooks->flush(h); }
++static long k_close(uint32_t h) { return ogx_log_io_hooks->close(h); }
++#else
++#define OGX_ST __attribute__((stdcall))
++typedef long (OGX_ST *nt_create_t)(uint32_t *, uint32_t, void *, void *, void *,
++                                   uint32_t, uint32_t, uint32_t, uint32_t);
++typedef long (OGX_ST *nt_write_t)(uint32_t, uint32_t, uint32_t, uint32_t, void *,
++                                  const void *, uint32_t, void *);
++typedef long (OGX_ST *nt_flush_t)(uint32_t, void *);
++typedef long (OGX_ST *nt_close_t)(uint32_t);
++
++/* resolved kernel thunk: a kernel VA, never the unresolved 0x8000xxxx ordinal */
++static int slot_ok(uint32_t s) { return *(volatile uint32_t *)s >= 0x80010000u; }
++#define SLOT(t, s) (*(t volatile *)(uintptr_t)(s))
++
++uint32_t ogx_log_ms(void)
++{
++	uint32_t p;
++	if (!slot_ok(OGX_SLOT_KETICKCOUNT))
++		return 0;
++	p = *(volatile uint32_t *)OGX_SLOT_KETICKCOUNT;
++	return *(volatile uint32_t *)(uintptr_t)p;
++}
++static uint32_t k_irql(void)
++{
++	uint8_t v;
++	__asm__ volatile("movb %%fs:0x24, %0" : "=q"(v));   /* KPCR.Irql */
++	return v;
++}
++static long k_create(uint32_t *h)
++{
++	static const char path[] = OGX_LOG_PATH;
++	volatile struct { uint16_t len, max; const char *s; } name;
++	volatile struct { uint32_t root; volatile void *name; uint32_t attrs; } oa;
++	volatile uint32_t io[2];
++	if (!slot_ok(OGX_SLOT_NTCREATEFILE) || !slot_ok(OGX_SLOT_NTWRITEFILE) ||
++	    !slot_ok(OGX_SLOT_NTFLUSHBUFFERS) || !slot_ok(OGX_SLOT_NTCLOSE))
++		return (long)(int)0xC0000001u;
++	name.len = sizeof(path) - 1; name.max = sizeof(path); name.s = path;
++	oa.root = 0; oa.name = &name; oa.attrs = 0x40;          /* OBJ_CASE_INSENSITIVE */
++	io[0] = io[1] = 0;
++	/* GENERIC_WRITE|SYNCHRONIZE, AllocationSize 0, FILE_ATTRIBUTE_NORMAL,
++	 * FILE_SHARE_READ, FILE_OVERWRITE_IF, NON_DIRECTORY|SYNCHRONOUS_IO_NONALERT */
++	return SLOT(nt_create_t, OGX_SLOT_NTCREATEFILE)(h, 0x40100000u, (void *)&oa,
++	                                                (void *)io, 0, 0x80u, 1u, 5u, 0x60u);
++}
++static long k_write(uint32_t h, const void *b, uint32_t n, uint32_t off)
++{
++	volatile uint32_t io[2] = { 0, 0 };
++	volatile uint32_t pos[2] = { off, 0 };                  /* LARGE_INTEGER */
++	return SLOT(nt_write_t, OGX_SLOT_NTWRITEFILE)(h, 0, 0, 0, (void *)io, b, n, (void *)pos);
++}
++static long k_flush(uint32_t h)
++{
++	volatile uint32_t io[2] = { 0, 0 };
++	return SLOT(nt_flush_t, OGX_SLOT_NTFLUSHBUFFERS)(h, (void *)io);
++}
++static long k_close(uint32_t h) { return SLOT(nt_close_t, OGX_SLOT_NTCLOSE)(h); }
++#endif
++
++void ogx_log_init(uint32_t flags)
++{
++	memset(&ogx_log_st, 0, sizeof ogx_log_st);
++	ogx_log_handle = 0;
++	ogx_log_st.state = (flags & 1u) ? OGX_LS_PENDING : OGX_LS_OFF;
++}
++
++int ogx_log_on(void)
++{
++	return ogx_log_st.state == OGX_LS_PENDING || ogx_log_st.state == OGX_LS_OPEN;
++}
++
++void ogx_ll_begin(struct ogx_log_line *l, const char *tag)
++{
++	l->n = 0;
++	if (!ogx_log_on())
++		return;
++	l->n = (uint32_t)gdr_dec(l->b, sizeof l->b, 0, ogx_log_ms());
++	l->n = (uint32_t)gdr_str(l->b, sizeof l->b, l->n, " ");
++	l->n = (uint32_t)gdr_str(l->b, sizeof l->b, l->n, tag);
++}
++static void ll_key(struct ogx_log_line *l, const char *k)
++{
++	l->n = (uint32_t)gdr_str(l->b, sizeof l->b, l->n, " ");
++	l->n = (uint32_t)gdr_str(l->b, sizeof l->b, l->n, k);
++	l->n = (uint32_t)gdr_str(l->b, sizeof l->b, l->n, "=");
++}
++void ogx_ll_dec(struct ogx_log_line *l, const char *k, uint32_t v)
++{
++	if (!l->n) return;
++	ll_key(l, k);
++	l->n = (uint32_t)gdr_dec(l->b, sizeof l->b, l->n, v);
++}
++void ogx_ll_hex(struct ogx_log_line *l, const char *k, uint32_t v)
++{
++	int nib = 1;
++	if (!l->n) return;
++	while (nib < 8 && (v >> (4 * nib))) nib++;
++	if (nib & 1) nib++;
++	ll_key(l, k);
++	l->n = (uint32_t)gdr_str(l->b, sizeof l->b, l->n, "0x");
++	l->n = (uint32_t)gdr_hex_u(l->b, sizeof l->b, l->n, v, nib);
++}
++void ogx_ll_str(struct ogx_log_line *l, const char *k, const char *s)
++{
++	if (!l->n) return;
++	ll_key(l, k);
++	l->n = (uint32_t)gdr_str(l->b, sizeof l->b, l->n, s);
++}
++void ogx_ll_bytes(struct ogx_log_line *l, const char *k, const uint8_t *p, uint32_t n)
++{
++	uint32_t i;
++	if (!l->n) return;
++	ll_key(l, k);
++	for (i = 0; i < n; i++)
++		l->n = (uint32_t)gdr_hex_u(l->b, sizeof l->b, l->n, p[i], 2);
++}
++void ogx_ll_end(struct ogx_log_line *l)
++{
++	if (!l->n || !ogx_log_on())
++		return;
++	if (l->n > sizeof l->b - 1)
++		l->n = sizeof l->b - 1;
++	l->b[l->n++] = '\n';
++	if (ogx_log_st.len + l->n > OGX_LOG_BUF) {
++		ogx_log_st.dropped++;
++		return;
++	}
++	memcpy(ogx_log_buf + ogx_log_st.len, l->b, l->n);
++	ogx_log_st.len += l->n;
++}
++
++static void log_dead(long rc)
++{
++	ogx_log_st.last_rc = rc;
++	ogx_log_st.state = OGX_LS_DEAD;
++	ogx_log_st.len = 0;
++	if (ogx_log_handle) { k_close(ogx_log_handle); ogx_log_handle = 0; }
++}
++
++void ogx_log_service(void)
++{
++	struct ogx_log_state *s = &ogx_log_st;
++	uint32_t now;
++	int force = 0;
++	long rc;
++
++	if (!ogx_log_on())
++		return;                                  /* flag clear: zero I/O */
++	if (k_irql() != 0)
++		return;                                  /* PASSIVE_LEVEL only   */
++	if (s->state == OGX_LS_PENDING) {
++		uint32_t h = 0;
++		rc = k_create(&h);
++		if (rc < 0) { log_dead(rc); return; }
++		ogx_log_handle = h;
++		s->state = OGX_LS_OPEN;
++		force = 1;
++	}
++	if (!s->len)
++		return;
++	now = ogx_log_ms();
++	if (!force && (uint32_t)(now - s->last_ms) < 1000u && s->len <= (OGX_LOG_BUF * 3u) / 4u)
++		return;
++	if (s->off + s->len > OGX_LOG_CAP - 64u) {
++		struct ogx_log_line l;
++		ogx_ll_begin(&l, "LOGFULL");
++		ogx_ll_dec(&l, "bytes", s->off);
++		ogx_ll_dec(&l, "dropped", s->dropped);
++		l.b[l.n++] = '\n';
++		rc = k_write(ogx_log_handle, l.b, l.n, s->off);
++		if (rc >= 0) { s->off += l.n; k_flush(ogx_log_handle); }
++		k_close(ogx_log_handle);
++		ogx_log_handle = 0;
++		s->len = 0;
++		s->state = OGX_LS_FULL;
++		return;
++	}
++	rc = k_write(ogx_log_handle, ogx_log_buf, s->len, s->off);
++	if (rc < 0) { log_dead(rc); return; }
++	rc = k_flush(ogx_log_handle);
++	if (rc < 0) { log_dead(rc); return; }
++	s->off += s->len;
++	s->len = 0;
++	s->last_ms = now;
++	s->writes++;
++}
+diff -ruN -x out orig/ogxbox/integration/ogx_log.h src/ogxbox/integration/ogx_log.h
+--- orig/ogxbox/integration/ogx_log.h	1969-12-31 19:00:00.000000000 -0500
++++ src/ogxbox/integration/ogx_log.h	2026-11-25 15:33:30.626200521 -0500
+@@ -0,0 +1,71 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later */
++/*
++ * ogx_log.h -- W63 opt-in on-console log file (E:\Trainers\AmpJack63.log).
++ *
++ * Contract: enabled only when the loader passes flags bit0 to the module entry.
++ * Flag clear = zero file I/O. Lines are formatted into a 2 KiB module buffer by
++ * TITLE-THREAD code only (pump + XInput stubs); DPC/USB callbacks never call
++ * anything here (they only bump counters). File calls (NtCreateFile /
++ * NtWriteFile / NtFlushBuffersFile / NtClose through the title's own kernel
++ * import slots) happen ONLY in ogx_log_service(), called from the pump, and
++ * only at PASSIVE_LEVEL. Any negative NTSTATUS turns logging off for the rest
++ * of the title run. Hard cap 512 KiB, then one LOGFULL line.
++ *
++ * Hosted builds route the file calls through `struct ogx_log_io` (5 function
++ * pointers) so tests can fake them; the tick comes from ogx_log_fake_tick.
++ */
++#ifndef OGX_LOG_H
++#define OGX_LOG_H
++#include <stdint.h>
++
++#define OGX_LOG_BUF   2048u
++#define OGX_LOG_CAP   (512u * 1024u)
++#define OGX_LOG_PATH  "\\Device\\Harddisk0\\Partition1\\Trainers\\AmpJack63.log"
++
++/* u803 kernel import slots (Pins._thunk_ordinal re-asserted by build.py) */
++#define OGX_SLOT_NTCREATEFILE   0x0041B660u   /* ord 190 */
++#define OGX_SLOT_NTWRITEFILE    0x0041B658u   /* ord 236 */
++#define OGX_SLOT_NTFLUSHBUFFERS 0x0041B6B0u   /* ord 198 */
++#define OGX_SLOT_NTCLOSE        0x0041B624u   /* ord 187 */
++#define OGX_SLOT_KETICKCOUNT    0x0041B774u   /* ord 156: slot holds &KeTickCount */
++
++#if __STDC_HOSTED__
++struct ogx_log_io {
++	long     (*create)(uint32_t *handle, const char *path, uint32_t access,
++	                   uint32_t attrs, uint32_t share, uint32_t disp, uint32_t opts);
++	long     (*write)(uint32_t handle, const void *buf, uint32_t len, uint32_t offset);
++	long     (*flush)(uint32_t handle);
++	long     (*close)(uint32_t handle);
++	uint32_t (*irql)(void);
++};
++extern const struct ogx_log_io *ogx_log_io_hooks;
++extern volatile uint32_t ogx_log_fake_tick;
++#endif
++
++enum { OGX_LS_OFF = 0, OGX_LS_PENDING = 1, OGX_LS_OPEN = 2, OGX_LS_DEAD = 3, OGX_LS_FULL = 4 };
++
++struct ogx_log_state {
++	uint32_t state;     /* OGX_LS_*                              */
++	uint32_t off;       /* explicit file ByteOffset (bytes written) */
++	uint32_t len;       /* bytes buffered                         */
++	uint32_t dropped;   /* lines dropped (buffer full)            */
++	uint32_t writes;    /* successful write+flush pairs           */
++	uint32_t last_ms;   /* tick of the last write                 */
++	long     last_rc;   /* last failing NTSTATUS (0 = none)       */
++};
++extern struct ogx_log_state ogx_log_st;
++
++struct ogx_log_line { uint32_t n; char b[200]; };
++
++void     ogx_log_init(uint32_t flags);
++int      ogx_log_on(void);
++uint32_t ogx_log_ms(void);
++void     ogx_ll_begin(struct ogx_log_line *l, const char *tag);
++void     ogx_ll_dec(struct ogx_log_line *l, const char *k, uint32_t v);
++void     ogx_ll_hex(struct ogx_log_line *l, const char *k, uint32_t v);
++void     ogx_ll_str(struct ogx_log_line *l, const char *k, const char *s);
++void     ogx_ll_bytes(struct ogx_log_line *l, const char *k, const uint8_t *p, uint32_t n);
++void     ogx_ll_end(struct ogx_log_line *l);
++void     ogx_log_service(void);          /* pump only */
++
++#endif /* OGX_LOG_H */
+diff -ruN -x out orig/ogxbox/integration/ogx_module.h src/ogxbox/integration/ogx_module.h
+--- orig/ogxbox/integration/ogx_module.h	2026-11-25 15:28:06.488178550 -0500
++++ src/ogxbox/integration/ogx_module.h	2026-11-25 15:34:55.694413047 -0500
+@@ -129,7 +129,10 @@
+ /* entry + pump + hook entry points -------------------------------- */
+ void ogx_transport_init(void);                          /* wire ctx/seams/desc   */
+ int  ogx_install_hooks(void);                           /* 6 XInput + FC E9 write */
+-int  ogx_module_entry(void *unused);                    /* .text.entry           */
++int  ogx_module_entry(uint32_t flags);                  /* .text.entry, cdecl; bit0 = log */
++int  ogx_module_main_flags(uint32_t flags);             /* W63 */
++void ogx_log_gdc(uintptr_t dtype, uint32_t ins, uint32_t rem);           /* W63 stub logs */
++void ogx_log_xi(int open, uint32_t port, uintptr_t handle);
+ void ogx_module_pump(void);                             /* per-title-tick        */
+ void ogx_transport_sync(void);                          /* title-thread generation
+                                                          * resync (no ring decode) */
+diff -ruN -x out orig/ogxbox/integration/ogx_present.c src/ogxbox/integration/ogx_present.c
+--- orig/ogxbox/integration/ogx_present.c	2026-11-25 15:28:06.488178550 -0500
++++ src/ogxbox/integration/ogx_present.c	2026-11-25 15:34:55.693154045 -0500
+@@ -8,6 +8,8 @@
+  */
+ #include "ogx_present.h"
+ 
++#define OGX_ERR_IO_PENDING 997u   /* ERROR_IO_PENDING (W63 SetState) */
++
+ /* ------------------------------------------------------------------------- */
+ /* presence contract                                                          */
+ /* ------------------------------------------------------------------------- */
+@@ -343,15 +345,21 @@
+ 		if (!ogx_port_present(ctx, v->port))
+ 			return OGX_ERR_NOT_CONNECTED;
+ 
+-		/* Input-only milestone: there are NO motors, so rumble cannot
+-		 * actuate and we will not pretend otherwise. We never read the
+-		 * header bytes as motor speeds and never emit a GIP rumble
+-		 * command. Returning ERROR_NOT_SUPPORTED and writing it into
+-		 * Header.dwStatus (the XID output-completion gate) tells the title
+-		 * honestly that the rumble did NOT happen; hEvent is left
+-		 * untouched because no completion occurs. */
+-		fb->Header.dwStatus = OGX_ERR_NOT_SUPPORTED;
+-		return OGX_ERR_NOT_SUPPORTED;
++		/* W63: store the desired motor speeds (Rumble at offset 66, never
++		 * the header) for the port; ogx_module_pump sends ONE GIP rumble
++		 * frame when the OUT path is idle (latest wins). The request is
++		 * complete as far as the title can observe: dwStatus = SUCCESS,
++		 * return ERROR_IO_PENDING (stock asynchronous semantics; the model
++		 * is silent). hEvent is recorded, NOT signalled in this slice. */
++		ctx->rumble_want[v->port] = (uint32_t)fb->Rumble.wLeftMotorSpeed |
++		                            ((uint32_t)fb->Rumble.wRightMotorSpeed << 16);
++		ctx->rumble_calls++;
++		if (!ctx->rumble_hevent_seen) {
++			ctx->rumble_hevent_seen = 1;
++			ctx->rumble_hevent = fb->Header.hEvent;
++		}
++		fb->Header.dwStatus = OGX_ERR_SUCCESS;
++		return OGX_ERR_IO_PENDING;
+ 	}
+ 	if (k == OGX_HK_STALE)
+ 		return OGX_ERR_NOT_CONNECTED;
+diff -ruN -x out orig/ogxbox/integration/ogx_present.h src/ogxbox/integration/ogx_present.h
+--- orig/ogxbox/integration/ogx_present.h	2026-11-25 15:28:06.488178550 -0500
++++ src/ogxbox/integration/ogx_present.h	2026-11-25 15:34:55.691598083 -0500
+@@ -120,6 +120,13 @@
+ 	uint32_t insertion_edges;
+ 	uint32_t removal_edges;
+ 	uint32_t forged_handles;
++
++	/* W63 rumble: desired motor speeds (wLeft | wRight << 16) written by the
++	 * virtual XInputSetState, consumed by ogx_module_pump. Title thread only. */
++	uint32_t rumble_want[OGX_MAX_PORTS];
++	uint32_t rumble_calls;        /* virtual SetState calls accepted        */
++	uint32_t rumble_hevent;       /* hEvent of the first call (never signalled) */
++	uint32_t rumble_hevent_seen;
+ };
+ 
+ /* whether a port is "present" under the decided contract */
+diff -ruN -x out orig/ogxbox/integration/ogx_stub.c src/ogxbox/integration/ogx_stub.c
+--- orig/ogxbox/integration/ogx_stub.c	2026-11-25 15:28:06.488178550 -0500
++++ src/ogxbox/integration/ogx_stub.c	2026-11-25 15:34:55.695564098 -0500
+@@ -27,6 +27,9 @@
+ 
+ static int g_pump_depth;
+ 
++void ogx_log_gdc(uintptr_t dtype, uint32_t ins, uint32_t rem);
++void ogx_log_xi(int open, uint32_t port, uintptr_t handle);
++
+ void ogx_stub_bind_ctx(struct ogx_host_ctx *ctx)
+ {
+ 	g_ctx = ctx;
+@@ -45,18 +48,28 @@
+ 	} else {
+ 		ogx_transport_sync();
+ 	}
+-	return ogx_XGetDeviceChanges(g_ctx, dtype, ins, rem);
++	{
++		uint32_t r = ogx_XGetDeviceChanges(g_ctx, dtype, ins, rem);
++		if (ins && rem && (*ins | *rem))
++			ogx_log_gdc(dtype, *ins, *rem);
++		return r;
++	}
+ }
+ 
+ uintptr_t OGX_STDCALL ogx_stub_xinputopen(uintptr_t dtype, uint32_t port, uint32_t slot, uintptr_t poll)
+ {
+ 	ogx_transport_sync();
+-	return ogx_XInputOpen(g_ctx, dtype, port, slot, poll);
++	{
++		uintptr_t h = ogx_XInputOpen(g_ctx, dtype, port, slot, poll);
++		ogx_log_xi(1, port, h);
++		return h;
++	}
+ }
+ 
+ void OGX_STDCALL ogx_stub_xinputclose(uintptr_t handle)
+ {
+ 	ogx_transport_sync();
++	ogx_log_xi(0, 0, handle);
+ 	ogx_XInputClose(g_ctx, handle);
+ }
+ 
+diff -ruN -x out orig/ogxbox/integration/ogx_transport.c src/ogxbox/integration/ogx_transport.c
+--- orig/ogxbox/integration/ogx_transport.c	2026-11-25 15:28:06.488178550 -0500
++++ src/ogxbox/integration/ogx_transport.c	2026-11-25 15:34:55.704147269 -0500
+@@ -16,6 +16,7 @@
+  * and no blocking in the XInput hook.
+  */
+ #include "ogx_module.h"
++#include "ogx_log.h"
+ 
+ /* ---- chain trampolines (trampoline.S) + the stub ctx binder (ogx_stub.c) ---- */
+ void   ogx_stub_bind_ctx(struct ogx_host_ctx *ctx);
+@@ -43,6 +44,16 @@
+  *      entry does NOT re-zero host. ---------------------------------------------- */
+ struct ogx_module ogx_g_module;
+ 
++/* ---- W63 diagnostics. The USB callbacks (DPC) ONLY increment these; every
++ *      log line is formatted on the title thread. ---------------------------- */
++static volatile uint32_t ogx_attach_calls, ogx_remove_calls, ogx_attach_refused;
++static uint32_t ogx_rumble_sent;      /* last rumble value enqueued (l | r<<16) */
++static uint32_t ogx_rumble_frames;    /* rumble frames enqueued                 */
++static uint32_t ogx_rumble_logged, ogx_rumble_hev_logged;
++static uint32_t ogx_l_att[5], ogx_l_att_valid;
++static uint32_t ogx_l_in_seen, ogx_l_in_reports, ogx_l_in_ms;
++static uint32_t ogx_l_cnt[10], ogx_l_cnt_ms, ogx_l_cnt_valid;
++
+ /* ---- transport seams: gdr_*_fn are plain function pointers in gipdrive.h;
+  *      these wrappers do the thiscall through the injected VA. ------------------ */
+ static long ogx_usb_submit(void *device, void *urb)
+@@ -193,12 +204,14 @@
+ 	 * same-level no-op). The body is bounded (one SubmitRequest). */
+ 	uint8_t old;
+ 	int span = ogx_span_enter(&old);
++	ogx_attach_calls++;                              /* W63 counter only */
+ 	ogx_attach_ran = 1;
+ 	ogx_g_module.att.in_complete = gdr_in_complete;  /* shared completion (gipdrive.h) */
+ 	ogx_g_module.att.cb_log = 0;                     /* no per-completion CB events    */
+ 	if (gdr_attach_begin(&ogx_g_module.att, device, ogx_usb_submit, &ogx_g_module.ring)) {
+ 		/* refused: previous generation still quiescing -> fail closed, abort THIS
+ 		 * enumeration instead of clobbering a live context. */
++		ogx_attach_refused++;                    /* W63 counter only */
+ 		ogx_g_module.att.add_complete(device, (long)(int)0xC0000001L);
+ 	}
+ 	if (span) ogx_span_leave(old);
+@@ -207,6 +220,7 @@
+ {
+ 	uint8_t old;
+ 	int span = ogx_span_enter(&old);
++	ogx_remove_calls++;                              /* W63 counter only */
+ 	gdr_remove_device(&ogx_g_module.att, device);
+ 	if (span) ogx_span_leave(old);
+ }
+@@ -264,6 +278,17 @@
+ 	if (g == ogx_seen_generation)
+ 		return;
+ 	ogx_seen_generation = g;
++	ogx_rumble_sent = 0;          /* W63: re-send a nonzero rumble after replug */
++	ogx_l_in_seen = 0;
++	{
++		struct ogx_log_line l;
++		ogx_ll_begin(&l, "GEN");
++		ogx_ll_dec(&l, "gen", g);
++		ogx_ll_dec(&l, "attach", ogx_attach_calls);
++		ogx_ll_dec(&l, "remove", ogx_remove_calls);
++		ogx_ll_dec(&l, "refused", ogx_attach_refused);
++		ogx_ll_end(&l);
++	}
+ 	ogx_stale_until  = ogx_g_module.ring.head;   /* read AFTER generation */
+ 	ogx_stale_active = 1;
+ 	ogx_gen_resyncs++;
+@@ -333,6 +358,166 @@
+ 	}
+ }
+ 
++/* ---- W63 log helpers (title thread only) ---------------------------------- */
++static int ogx_is_virtual(uintptr_t h)
++{
++	const struct ogx_host_ctx *p = &ogx_g_module.present;
++	return h >= (uintptr_t)&p->vh[0] && h < (uintptr_t)&p->vh[OGX_HANDLE_ARENA];
++}
++void ogx_log_gdc(uintptr_t dtype, uint32_t ins, uint32_t rem)
++{
++	struct ogx_log_line l;
++	ogx_ll_begin(&l, "GDC");
++	ogx_ll_hex(&l, "type", (uint32_t)dtype);
++	ogx_ll_dec(&l, "gamepad", dtype == ogx_g_module.present.xdevice_type_gamepad);
++	ogx_ll_hex(&l, "ins", ins);
++	ogx_ll_hex(&l, "rem", rem);
++	ogx_ll_end(&l);
++}
++void ogx_log_xi(int open, uint32_t port, uintptr_t handle)
++{
++	struct ogx_log_line l;
++	ogx_ll_begin(&l, open ? "XIOPEN" : "XICLOSE");
++	if (open) ogx_ll_dec(&l, "port", port);
++	ogx_ll_str(&l, "kind", !handle ? "none" : ogx_is_virtual(handle) ? "virtual" : "native");
++	ogx_ll_hex(&l, open ? "result" : "handle", (uint32_t)handle);
++	ogx_ll_end(&l);
++}
++static void ogx_log_rx(const u8 *d, u32 len)
++{
++	struct ogx_log_line l;
++	if (!ogx_log_on())
++		return;
++	while (len > 3) {
++		u8 cmd = d[0], opt = d[1], sq = d[2];
++		u32 pl = 0, avail, nb; int c = 0, hdr, i;
++		for (i = 0; i < 4 && 3 + i < (int)len; i++) {
++			pl |= (u32)(d[3 + i] & 0x7f) << (7 * i); c++;
++			if (!(d[3 + i] & 0x80)) break;
++		}
++		hdr = 3 + c;
++		if (opt & GIP_OPT_CHUNK) {
++			while (hdr < (int)len && (d[hdr] & 0x80)) hdr++;
++			hdr++;
++		}
++		avail = (u32)hdr < len ? len - (u32)hdr : 0;
++		if (cmd != GIP_CMD_INPUT) {
++			nb = pl < avail ? pl : avail;
++			if (nb > 32) nb = 32;
++			ogx_ll_begin(&l, "RX");
++			ogx_ll_hex(&l, "cmd", cmd);
++			ogx_ll_hex(&l, "opt", opt);
++			ogx_ll_dec(&l, "seq", sq);
++			ogx_ll_dec(&l, "len", pl);
++			ogx_ll_bytes(&l, "data", d + hdr, nb);
++			ogx_ll_end(&l);
++		}
++		if ((u32)hdr > len || pl > avail)
++			break;
++		d += (u32)hdr + pl;
++		len -= (u32)hdr + pl;
++	}
++}
++static void ogx_log_att(void)
++{
++	const struct gdr_attach_ctx *a = &ogx_g_module.att;
++	u32 v[5] = { a->state, a->lifecycle, a->in_handle, a->out_handle, a->failed };
++	struct ogx_log_line l;
++	int i, same = ogx_l_att_valid;
++	if (!ogx_log_on())
++		return;
++	for (i = 0; i < 5; i++) if (v[i] != ogx_l_att[i]) same = 0;
++	if (same)
++		return;
++	for (i = 0; i < 5; i++) ogx_l_att[i] = v[i];
++	ogx_l_att_valid = 1;
++	ogx_ll_begin(&l, "ATT");
++	ogx_ll_dec(&l, "state", v[0]);
++	ogx_ll_dec(&l, "life", v[1]);
++	ogx_ll_hex(&l, "in", v[2]);
++	ogx_ll_hex(&l, "out", v[3]);
++	ogx_ll_dec(&l, "failed", v[4]);
++	ogx_ll_dec(&l, "gen", a->generation);
++	ogx_ll_end(&l);
++}
++static void ogx_log_periodic(u32 now)
++{
++	struct ogx_host_ctx *p = &ogx_g_module.present;
++	struct gdr_gip *m = &ogx_g_module.gip;
++	struct ogx_log_line l;
++	u32 w = p->rumble_want[OGX_TRANSPORT_PORT];
++	int i, same;
++	if (!ogx_log_on())
++		return;
++	if (m->input_reports && (!ogx_l_in_seen ||
++	    (m->input_reports != ogx_l_in_reports && (u32)(now - ogx_l_in_ms) >= 1000u))) {
++		ogx_ll_begin(&l, "IN");
++		ogx_ll_dec(&l, "first", !ogx_l_in_seen);
++		ogx_ll_dec(&l, "reports", m->input_reports);
++		ogx_ll_hex(&l, "buttons", m->snap.buttons);
++		ogx_ll_end(&l);
++		ogx_l_in_seen = 1; ogx_l_in_reports = m->input_reports; ogx_l_in_ms = now;
++	}
++	if (p->rumble_calls && (w != ogx_rumble_logged || !ogx_rumble_hev_logged)) {
++		ogx_ll_begin(&l, "RUMBLE");
++		ogx_ll_hex(&l, "l", w & 0xffffu);
++		ogx_ll_hex(&l, "r", w >> 16);
++		ogx_ll_dec(&l, "calls", p->rumble_calls);
++		if (!ogx_rumble_hev_logged) ogx_ll_hex(&l, "hevent", p->rumble_hevent);
++		ogx_ll_end(&l);
++		ogx_rumble_logged = w; ogx_rumble_hev_logged = 1;
++	}
++	if ((u32)(now - ogx_l_cnt_ms) >= 5000u) {
++		u32 v[10] = { ogx_lost_events, ogx_gen_resyncs, ogx_span_refused, ogx_span_revalid,
++		              m->tx_dropped, m->unknown_cmds, m->announces, m->rehandshakes,
++		              p->rumble_calls, ogx_rumble_frames };
++		ogx_l_cnt_ms = now;
++		same = ogx_l_cnt_valid;
++		for (i = 0; i < 10; i++) if (v[i] != ogx_l_cnt[i]) same = 0;
++		if (!same) {
++			for (i = 0; i < 10; i++) ogx_l_cnt[i] = v[i];
++			ogx_l_cnt_valid = 1;
++			ogx_ll_begin(&l, "CNT");
++			ogx_ll_dec(&l, "lost_events", v[0]);
++			ogx_ll_dec(&l, "gen_resyncs", v[1]);
++			ogx_ll_dec(&l, "span_refused", v[2]);
++			ogx_ll_dec(&l, "span_revalid", v[3]);
++			ogx_ll_dec(&l, "tx_dropped", v[4]);
++			ogx_ll_dec(&l, "unknown_cmds", v[5]);
++			ogx_ll_dec(&l, "announces", v[6]);
++			ogx_ll_dec(&l, "rehandshakes", v[7]);
++			ogx_ll_dec(&l, "setstate", v[8]);
++			ogx_ll_dec(&l, "rumble_frames", v[9]);
++			ogx_ll_end(&l);
++		}
++	}
++}
++
++/* ---- W63 rumble: ONE frame when the whole OUT path is idle (latest wins) ----
++ * xpad Xbox One form: 09 00 <seq> 09 | 00 0F 00 00 <L> <R> FF 00 FF, with
++ * L = OG left (low-frequency) speed >> 9, R = right speed >> 9. Never between a
++ * power-on and its S-init. Title thread only; the frame goes through the normal
++ * drain -> span-locked enqueue -> submit path. */
++static void ogx_rumble_service(void)
++{
++	struct gdr_gip *m = &ogx_g_module.gip;
++	const struct gdr_attach_ctx *a = &ogx_g_module.att;
++	u32 want = ogx_g_module.present.rumble_want[OGX_TRANSPORT_PORT];
++	u8 p[9] = { 0x00, 0x0F, 0x00, 0x00, 0, 0, 0xFF, 0x00, 0xFF };
++	u8 f[64]; int n;
++	if (!m->ready || m->s_init_pending || want == ogx_rumble_sent)
++		return;
++	if (m->txh != m->txt || a->tx_head != a->tx_tail || a->tx_busy)
++		return;
++	p[4] = (u8)((want & 0xffffu) >> 9);
++	p[5] = (u8)((want >> 16) >> 9);
++	n = gdr_gip_frame(f, GIP_CMD_RUMBLE, 0, gdr_next_seq(m), p, 9);
++	if (gdr_tx_send(m, f, n)) {
++		ogx_rumble_sent = want;
++		ogx_rumble_frames++;
++	}
++}
++
+ void ogx_transport_init(void)
+ {
+ 	struct ogx_host_ctx *p = &ogx_g_module.present;
+@@ -394,6 +579,7 @@
+ 
+ 	/* 1. lifecycle truth from the real generation, not from ring delivery */
+ 	ogx_transport_sync();
++	ogx_log_att();
+ 
+ 	/* 2. overflow: everything queued NOW is older than the dropped events
+ 	 *    (drop-newest; no pop since the drop). Decode it as history, then
+@@ -421,10 +607,27 @@
+ 			ogx_stale_active = 0;
+ 		}
+ 		if (ev.kind == GDR_EVT_RX) {
++			u32 rh = ogx_g_module.gip.rehandshakes;
++			u32 rl = ev.len > GDR_PKT_MAX ? GDR_PKT_MAX : ev.len;
++			ogx_log_rx(ev.data, rl);
+ 			gdr_gip_rx(&ogx_g_module.gip, ev.data, (int)ev.len);
+-		} else if (ev.kind == GDR_EVT_TXDONE && ev.b == GIP_CMD_POWER &&
+-		           (long)(int)ev.a >= 0) {
+-			gdr_gip_on_power_done(&ogx_g_module.gip);
++			if (ogx_g_module.gip.rehandshakes != rh) {
++				struct ogx_log_line l;
++				ogx_ll_begin(&l, "REHS");
++				ogx_ll_dec(&l, "n", ogx_g_module.gip.rehandshakes);
++				ogx_ll_dec(&l, "announces", ogx_g_module.gip.announces);
++				ogx_ll_dec(&l, "s_init_pending", (u32)ogx_g_module.gip.s_init_pending);
++				ogx_ll_end(&l);
++			}
++		} else if (ev.kind == GDR_EVT_TXDONE) {
++			struct ogx_log_line l;
++			ogx_ll_begin(&l, "TXDONE");
++			ogx_ll_hex(&l, "cmd", ev.b);
++			ogx_ll_hex(&l, "status", ev.a);
++			ogx_ll_dec(&l, "len", ev.len);
++			ogx_ll_end(&l);
++			if (ev.b == GIP_CMD_POWER && (long)(int)ev.a >= 0)
++				gdr_gip_on_power_done(&ogx_g_module.gip);
+ 		} else if (ev.kind == GDR_EVT_DETACH) {
+ 			/* a removal pushed while we were draining: same generation
+ 			 * resync (discards what remains of the old generation) */
+@@ -441,20 +644,38 @@
+ 	now = ogx_g_module.host.now_ms ? ogx_g_module.host.now_ms() : 0u;
+ 
+ 	if (gdr_transport_live((int)ogx_attach_ran, ogx_g_module.att.in_handle)) {
+-		if (ogx_g_module.att.state >= 6u && ogx_g_module.gip.gamepad == 0)
++		if (ogx_g_module.att.state >= 6u && ogx_g_module.gip.gamepad == 0) {
++			struct ogx_log_line l;
+ 			gdr_gip_qualify_wired(&ogx_g_module.gip);  /* minimal power-on, S-init on done */
++			ogx_ll_begin(&l, "QUAL");
++			ogx_ll_dec(&l, "ready", (u32)ogx_g_module.gip.ready);
++			ogx_ll_dec(&l, "s_init_pending", (u32)ogx_g_module.gip.s_init_pending);
++			ogx_ll_end(&l);
++		}
+ 		gdr_gip_poll(&ogx_g_module.gip, now);
++		ogx_rumble_service();
+ 
+ 		/* OUT: drain (title-thread decoder state, outside any span), then
+ 		 * enqueue and submit each in its own short DISPATCH span with the
+ 		 * context revalidated inside it (F6). */
+ 		u8 out_pkt[64]; int out_n;
+-		while ((out_n = gdr_tx_drain(&ogx_g_module.gip, out_pkt, 64)) > 0)
++		while ((out_n = gdr_tx_drain(&ogx_g_module.gip, out_pkt, 64)) > 0) {
++			struct ogx_log_line l;
++			ogx_ll_begin(&l, "TX");
++			ogx_ll_hex(&l, "cmd", out_pkt[0]);
++			ogx_ll_dec(&l, "seq", out_pkt[2]);
++			ogx_ll_dec(&l, "len", (u32)out_n);
++			ogx_ll_end(&l);
+ 			ogx_tx_locked(0, out_pkt, out_n);
++		}
+ 		ogx_tx_locked(1, 0, 0);
+ 	}
+ 
+ 	ogx_bridge_publish();
++
++	/* W63: IN / RUMBLE / CNT lines, then the only file I/O (PASSIVE only) */
++	ogx_log_periodic(ogx_log_ms());
++	ogx_log_service();
+ }
+ 
+ /* ---- status for the parent's readback (bits) ------------------------------ */
+--- ../43-trainer-candidate/loader.c	2026-11-25 02:25:36.134898741 -0500
++++ loader.c	2026-11-25 15:38:37.783863670 -0500
+@@ -1,5 +1,6 @@
+ /* SPDX-License-Identifier: GPL-3.0-or-later
+- * AJ43 matched-pair pre-entry loader. No persistent globals or title pointers.
++ * AJ43 matched-pair pre-entry loader (W63 copy: entry argument = option flags,
++ * six extra resolved-slot checks for the log file I/O + KeTickCount). No persistent globals or title pointers.
+  * The on-disk envelope is deliberately NOT H2S2: the frozen ELF has code at
+  * offset zero and cdecl entry ignores its argument, unlike H2S2 stdcall(host).
+  * Preserve every original ELF virtual offset; inject its real BSS host first.
+@@ -71,8 +72,8 @@
+ }
+ /* Compiler emits a real cdecl indirect call and caller-side argument cleanup.
+  * Harness observes this actual function, then executes the untouched ELF entry. */
+-__attribute__((noinline)) static int adapter_call(u8 *b){
+- return ((int(*)(void*)) (b+ENTRY_OFF))(0);
++__attribute__((noinline)) static int adapter_call(u8 *b,u32 flags){
++ return ((int(*)(u32)) (b+ENTRY_OFF))(flags);   /* W63: bit0 = write log */
+ }
+ extern u8 boot_end[] __attribute__((visibility("hidden")));
+ static int region_ok(u8 *p,u32 n,u8*t){
+@@ -82,13 +83,14 @@
+ }
+ void trainer_main(u8*t){
+  u32 op=get(t+0x0a),sz=get(t),i,h=0,io[2],off[2]={0,0};
+- u8 *f=0,*b=0; s32 rc;u8 extra;
++ u8 *f=0,*b=0; s32 rc;u8 extra;u32 flags;
+  volatile struct {u16 len,max; const char *s;} name;
+  struct {u32 root;void *name;u32 flags;} oa={0,(void*)&name,0x40};
+  name.len=sizeof(payload_path)-1;name.max=sizeof(payload_path);name.s=payload_path;
+  /* No cross-title state; retail/relaunch/off gates happen before I/O or alloc. */
+  if(sz>15193 || op<(u32)boot_end-(u32)t || op>=sz || t[op]!=1)return;
+  if(!title_ok())return;
++ flags=(op+1<sz && t[op+1]==1)?1u:0u;   /* W63: XBTF option [1] */
+  rc=(*(s32(ST **)(u32*,u32,void*,u32*,u32,u32))0x41b654)(&h,0x80100000,&oa,io,1,0x60);
+  if(rc<0)return;
+  f=alloc(FILE_ALLOC);
+@@ -126,7 +128,7 @@
+  /* All BSS is zero BEFORE the first 44-byte host write. */
+  for(i=0;i<11;i++)V(b+MODULE_OFF+4*i)=host_values[i];
+  for(i=0;i<11;i++)if(V(b+MODULE_OFF+4*i)!=host_values[i])goto free_b;
+- rc=adapter_call(b);
++ rc=adapter_call(b,flags);
+  if(rc==0 && hooks_ok(b))return; /* resident remains title-owned, not persisted */
+  restore_owned();
+ free_b:

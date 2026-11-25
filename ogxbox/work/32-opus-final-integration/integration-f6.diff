@@ -1,0 +1,206 @@
+diff -u -x out -x asan -x test -x test-clang -x '*.o' -x README.md -x detour_plan.py -x freestanding -x '*.py' work/32-opus-final-integration/baseline-integration/ogx_install.c integration/ogx_install.c
+--- work/32-opus-final-integration/baseline-integration/ogx_install.c	2026-11-25 00:29:21.064675279 -0500
++++ integration/ogx_install.c	2026-11-25 00:30:37.472646035 -0500
+@@ -88,7 +88,12 @@
+ 	    !ogx_g_module.host.remove_complete ||
+ 	    !ogx_g_module.host.class_table_begin ||
+ 	    !ogx_g_module.host.class_table_end ||
+-	    !ogx_g_module.host.xdevice_type_gamepad) {
++	    !ogx_g_module.host.xdevice_type_gamepad ||
++	    /* F6 span: both kernel import slots injected and resolved (nonzero) */
++	    !ogx_g_module.host.irql_raise_slot ||
++	    !ogx_g_module.host.irql_lower_slot ||
++	    !*(volatile uint32_t *)(uintptr_t)ogx_g_module.host.irql_raise_slot ||
++	    !*(volatile uint32_t *)(uintptr_t)ogx_g_module.host.irql_lower_slot) {
+ 		ogx_g_module.install_failed = 1;
+ 		return -1;
+ 	}
+diff -u -x out -x asan -x test -x test-clang -x '*.o' -x README.md -x detour_plan.py -x freestanding -x '*.py' work/32-opus-final-integration/baseline-integration/ogx_module.h integration/ogx_module.h
+--- work/32-opus-final-integration/baseline-integration/ogx_module.h	2026-11-25 00:29:21.065675274 -0500
++++ integration/ogx_module.h	2026-11-25 00:30:31.308759281 -0500
+@@ -28,8 +28,10 @@
+  * bridge can be driven by an instrumented fake submit/add/remove. */
+ #ifdef __i386__
+ #define OGX_THISCALL __attribute__((thiscall))
++#define OGX_FASTCALL __attribute__((fastcall))
+ #else
+ #define OGX_THISCALL
++#define OGX_FASTCALL
+ #endif
+ 
+ /* ---- the fixed virtual slot the modern GIP pad is published on -------------- */
+@@ -90,7 +92,23 @@
+ 	 * dependency. Native GetTickCount is u32 __stdcall, NOT a u64 cast; kept
+ 	 * correctly typed in case a future keepalive ever needs it. 0 is accepted. */
+ 	uint32_t (OGX_STDCALL *now_ms)(void);
++
++	/* F6 critical span (work/32). These are the ADDRESSES OF THE TITLE'S OWN
++	 * KERNEL IMPORT SLOTS, not function addresses: the module calls through
++	 * *slot exactly like the title does (XInputGetState 0x413C50
++	 * `call [0x41B700]` ... 0x413CB0 `mov cl,al; call [0x41B6FC]`).
++	 * Pinned from the frozen u803 XBE + XDK 5849 xboxkrnl.lib (work/32
++	 * tools/pin_irql.py):
++	 *   irql_raise_slot = 0x0041B700  ord 129 _KeRaiseIrqlToDpcLevel@0
++	 *                     (stdcall, no args, returns the old KIRQL in AL)
++	 *   irql_lower_slot = 0x0041B6FC  ord 161 @KfLowerIrql@4
++	 *                     (fastcall, NewIrql in CL)
++	 * REQUIRED: ogx_install_hooks refuses on 0, and the freestanding title
++	 * build never submits OUT without the span. */
++	uint32_t irql_raise_slot;
++	uint32_t irql_lower_slot;
+ };
++#define OGX_HAS_IRQL_SPAN 1
+ 
+ /* ---- one title-resident module instance (all static, no heap) --------------- */
+ struct ogx_module {
+diff -u -x out -x asan -x test -x test-clang -x '*.o' -x README.md -x detour_plan.py -x freestanding -x '*.py' work/32-opus-final-integration/baseline-integration/ogx_transport.c integration/ogx_transport.c
+--- work/32-opus-final-integration/baseline-integration/ogx_transport.c	2026-11-25 00:29:21.065675274 -0500
++++ integration/ogx_transport.c	2026-11-25 00:31:10.731699548 -0500
+@@ -79,6 +79,78 @@
+ static void OGX_STDCALL ogx_gip_attach(void *device);
+ static void OGX_STDCALL ogx_gip_remove(void *device);
+ 
++/* ---- F6 critical span: DISPATCH_LEVEL through the title's own imports -------
++ * Xbox is uniprocessor. RemoveDevice and every URB completion run as DPCs, so
++ * holding DISPATCH_LEVEL on the title thread defers them until KfLowerIrql;
++ * that is real interruption exclusion, not a reentrancy flag. Raise/lower go
++ * through the title's resolved kernel import slots (see ogx_module.h):
++ *   KeRaiseIrqlToDpcLevel  stdcall(void) -> old KIRQL (AL)
++ *   KfLowerIrql            fastcall(KIRQL NewIrql in CL)
++ * Spans are short and bounded: one revalidation plus one gdr_tx_enqueue copy,
++ * or one gdr_tx_submit_next (one SubmitRequest; inline completions re-enter it
++ * at most GDR_TX_SLOTS times). No wait, spin, heap, file I/O, decode or
++ * original XInput call ever runs inside a span. SubmitRequest at DISPATCH is
++ * the same context the completion path already re-submits from. */
++typedef uint8_t (OGX_STDCALL  *ogx_raise_fn)(void);
++typedef void    (OGX_FASTCALL *ogx_lower_fn)(uint8_t new_irql);
++
++static volatile uint32_t ogx_span_refused;   /* title build: OUT skipped, no span */
++static volatile uint32_t ogx_span_revalid;   /* revalidation inside span refused  */
++
++static int ogx_span_enter(uint8_t *old)
++{
++	uint32_t rs = ogx_g_module.host.irql_raise_slot;
++	uint32_t ls = ogx_g_module.host.irql_lower_slot;
++	ogx_raise_fn r;
++	if (!rs || !ls || !*(volatile uint32_t *)(uintptr_t)ls)
++		return 0;
++	r = *(ogx_raise_fn volatile *)(uintptr_t)rs;
++	if (!r)
++		return 0;
++	*old = r();
++	return 1;
++}
++static void ogx_span_leave(uint8_t old)
++{
++	(*(ogx_lower_fn volatile *)(uintptr_t)ogx_g_module.host.irql_lower_slot)(old);
++}
++
++static volatile uint32_t ogx_attach_ran;
++static uint32_t ogx_seen_generation;
++
++/* OUT path validity, evaluated INSIDE the span: the caller's earlier
++ * transport-live check may predate a RemoveDevice (and a re-attach). */
++static int ogx_tx_valid(void)
++{
++	const struct gdr_attach_ctx *a = &ogx_g_module.att;
++	return ogx_attach_ran && a->device && !a->detached && a->out_handle &&
++	       a->generation == ogx_seen_generation;
++}
++
++/* op 0: enqueue one drained frame; op 1: submit the next queued frame */
++static void ogx_tx_locked(int op, const u8 *pkt, int n)
++{
++	uint8_t old;
++	if (!ogx_span_enter(&old)) {
++#if __STDC_HOSTED__
++		/* hosted regression builds that inject no IRQL doubles keep the
++		 * pre-work/32 behaviour; the title build is freestanding. */
++		if (op) gdr_tx_submit_next(&ogx_g_module.att);
++		else    gdr_tx_enqueue(&ogx_g_module.att, pkt, n);
++#else
++		ogx_span_refused++;     /* fail closed: no OUT without exclusion */
++#endif
++		return;
++	}
++	if (!ogx_tx_valid())
++		ogx_span_revalid++;
++	else if (op)
++		gdr_tx_submit_next(&ogx_g_module.att);
++	else
++		gdr_tx_enqueue(&ogx_g_module.att, pkt, n);
++	ogx_span_leave(old);
++}
++
+ /* ---- FindClassDriver E9 hook target ---------------------------------------- */
+ /*
+  * u803 FindClassDriver @0x41517D VERIFIED (pin_u803.py, frozen bytes
+@@ -110,11 +182,17 @@
+ 	return 0;
+ }
+ 
+-/* attach-ran flag (separate from the derived "transport live" state) */
+-static volatile uint32_t ogx_attach_ran;
++/* attach-ran flag (separate from the derived "transport live" state);
++ * declared above the F6 span helpers */
+ 
+ static void OGX_STDCALL ogx_gip_attach(void *device)
+ {
++	/* native USB callback: run the producer body inside the span so its ring
++	 * pushes / submits cannot interleave with a completion DPC even if the
++	 * stack ever calls this below DISPATCH (at DISPATCH raise/lower is a
++	 * same-level no-op). The body is bounded (one SubmitRequest). */
++	uint8_t old;
++	int span = ogx_span_enter(&old);
+ 	ogx_attach_ran = 1;
+ 	ogx_g_module.att.in_complete = gdr_in_complete;  /* shared completion (gipdrive.h) */
+ 	ogx_g_module.att.cb_log = 0;                     /* no per-completion CB events    */
+@@ -123,10 +201,14 @@
+ 		 * enumeration instead of clobbering a live context. */
+ 		ogx_g_module.att.add_complete(device, (long)(int)0xC0000001L);
+ 	}
++	if (span) ogx_span_leave(old);
+ }
+ static void OGX_STDCALL ogx_gip_remove(void *device)
+ {
++	uint8_t old;
++	int span = ogx_span_enter(&old);
+ 	gdr_remove_device(&ogx_g_module.att, device);
++	if (span) ogx_span_leave(old);
+ }
+ 
+ /* ---- lifecycle truth independent of ring delivery (F1/F2/F3) ----------------
+@@ -144,7 +226,6 @@
+  * not the reverse). Under that model RemoveDevice's generation++ and its
+  * DETACH push are observed together, and a dropped event can only be newer
+  * than everything still queued (drop-newest, and no pop happened since).   */
+-static uint32_t ogx_seen_generation;   /* last att.generation acted upon          */
+ static uint32_t ogx_stale_until;       /* ring index: events before it predate the
+                                         * observed generation change -> discarded  */
+ static uint32_t ogx_stale_active;
+@@ -364,10 +445,13 @@
+ 			gdr_gip_qualify_wired(&ogx_g_module.gip);  /* minimal power-on, S-init on done */
+ 		gdr_gip_poll(&ogx_g_module.gip, now);
+ 
++		/* OUT: drain (title-thread decoder state, outside any span), then
++		 * enqueue and submit each in its own short DISPATCH span with the
++		 * context revalidated inside it (F6). */
+ 		u8 out_pkt[64]; int out_n;
+ 		while ((out_n = gdr_tx_drain(&ogx_g_module.gip, out_pkt, 64)) > 0)
+-			gdr_tx_enqueue(&ogx_g_module.att, out_pkt, out_n);
+-		gdr_tx_submit_next(&ogx_g_module.att);
++			ogx_tx_locked(0, out_pkt, out_n);
++		ogx_tx_locked(1, 0, 0);
+ 	}
+ 
+ 	ogx_bridge_publish();
+@@ -384,6 +468,8 @@
+ 	if (ogx_g_module.host.cancel_request == 0) s |= (1u << 12);  /* cancel optional/unresolved */
+ 	if (ogx_lost_events)                     s |= (1u << 13);  /* ring overflow -> fail-closed neutral ran */
+ 	if (ogx_gen_resyncs)                     s |= (1u << 14);  /* generation-driven resync ran */
++	if (ogx_span_refused)                    s |= (1u << 15);  /* OUT skipped: no IRQL span (title build) */
++	if (ogx_span_revalid)                    s |= (1u << 16);  /* OUT refused by in-span revalidation */
+ 	return s;
+ }
+ 
+Only in work/32-opus-final-integration/baseline-integration: SHA256SUMS
