@@ -1,18 +1,5 @@
-AmpJack, a fork of Jacckii/Xbox360-Series-Controllers-Native, licensed under the
-GNU GPL version 3 or later (LICENSE).
+OG-AmpJack is a port of AmpJack (https://github.com/Roasted-Codes/AmpJack), itself a fork of
+Jacckii/Xbox360-Series-Controllers-Native, licensed under the GNU GPL version 3 or later (LICENSE).
 
-This product includes data derived from the SADIE II database (subject D1, Neumann KU100
-dummy head head-related impulse responses), Copyright 2018 University of York, AudioLab,
-Department of Electronic Engineering, licensed under the Apache License, Version 2.0
-(tools/hrtf/LICENSE-Apache-2.0.txt, http://www.apache.org/licenses/LICENSE-2.0).
-https://www.york.ac.uk/sadie-project/database.html
-C. Armstrong, L. Thresh, D. Murphy, G. Kearney, "A Perceptual Evaluation of Individual and
-Non-Individual HRTFs: A Case Study of the SADIE II Database", Applied Sciences 8(11):2029,
-2018, https://doi.org/10.3390/app8112029
-
-The data was modified: five speaker directions (0, +/-30, +/-110 degrees) were taken,
-averaged for a symmetric head, rebuilt as minimum-phase filters with a far-ear delay,
-shortened to 32, 64 and 128 taps, combined into sum and difference filters, scaled and
-quantised to 16 bits. The result is the headphone surround table xbox360/surround_tab.h,
-compiled into xw.xex. tools/hrtf/CREDITS.txt describes each step; tools/hrtf/gen.py does
-them.
+Protocol and adapter definitions in src/core derive from xone (https://github.com/dlundqvist/xone)
+and mt76 (https://github.com/openwrt/mt76); those files keep their original copyright headers.

@@ -1,0 +1,8 @@
+# Exceptions for scripts/prepush_check.py (github skill).
+# Technical terms in the driver source, not process vocabulary.
+owner
+parent
+session
+# Pinned prebuilt controller module the package is built around (see docs/BUILD.md).
+bin:tools/inputs/module.bin
+bin:tools/inputs/module.elf
