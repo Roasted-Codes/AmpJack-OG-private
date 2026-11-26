@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Actual packaged i386 execution. ALL kernel/file surfaces are SYNTHETIC.
-No USB, guest, native console or physical-control acceptance is implied.
+No USB, guest or native console behaviour is exercised here.
 Pattern adapted from LAN_Stats/tests/test_stage2_loader_model.py; no builds there.
 """
 import argparse, json, struct, sys, unittest
@@ -13,9 +13,9 @@ import host_helpers
 B.W32 = host_helpers
 import unicorn as U
 from unicorn import x86_const as R
-OUT=Path(os.environ.get('AMPJACK_TEST_OUT', B.ROOT/'dist'))
+OUT=Path(os.environ.get('AMPJACK_TEST_OUT', B.REPO/'build'))
 T=0x800000; STACK=0xa00000; DONE=0xa80000; K=0x90000000; F=0xc00000
-EXTRA_IMPORTS=[]  # W65R has only the seven baseline imports, no logging imports.
+EXTRA_IMPORTS=[]  # Only the seven baseline imports, no logging imports.
 REGS=[R.UC_X86_REG_EAX,R.UC_X86_REG_ECX,R.UC_X86_REG_EDX,R.UC_X86_REG_EBX,R.UC_X86_REG_EBP,R.UC_X86_REG_ESI,R.UC_X86_REG_EDI]
 def u32(b):return struct.unpack('<I',b)[0]
 def pk(v):return struct.pack('<I',v&0xffffffff)
@@ -23,7 +23,7 @@ class Machine:
  def __init__(self,base=0x1000000,case='ok',data=None,payload=None):
   self.mod,self.pins,self.j,_=B.inputs(Path(os.environ['AMPJACK_TEST_XBE']));self.base=base;self.case=case
   self.data,self.man=B.check(OUT) if data is None else (data,json.loads((OUT/'manifest.json').read_text()))
-  self.file=(OUT/'candidate'/B.NAMES[1]).read_bytes() if payload is None else payload
+  self.file=(OUT/B.PAIR/B.NAMES[1]).read_bytes() if payload is None else payload
   self.m=U.Uc(U.UC_ARCH_X86,U.UC_MODE_32);m=self.m
   for start,size in [(0x10000,0x600000),(T,0x10000),(STACK-0x10000,0x90000),(F,0x10000),(base,0x10000),(K,0x1000)]:m.mem_map(start,size)
   m.mem_write(F,b'\xcc'*0x10000);m.mem_write(base,b'\xcc'*0x10000)
@@ -99,7 +99,7 @@ class Machine:
    self.entered+=1
    assert self.zero_seen
    self.entry_flags.append(self.word(sp+4))
-   assert self.entry_flags[-1]==0,'actual W65R cdecl entry must receive null argument'
+   assert self.entry_flags[-1]==0,'actual cdecl entry must receive null argument'
    expected,_=self.mod.image(self.base,self.j['host'])
    assert self.rd(self.base,len(expected))==expected,'full relocated image/host/BSS differs from independent W32 image oracle'
    self.preimage=True
@@ -140,7 +140,7 @@ class Machine:
   else:raise AssertionError('module unexpectedly executed a kernel/USB surface at entry')
   m.reg_write(R.UC_X86_REG_EAX,rc)
  def run(self):
-  self.m.emu_start(T+B.TF.parse((OUT/'candidate'/B.NAMES[0]).read_bytes(),True)[1]['entry_off'],DONE,count=8_000_000)
+  self.m.emu_start(T+B.TF.parse((OUT/B.PAIR/B.NAMES[0]).read_bytes(),True)[1]['entry_off'],DONE,count=8_000_000)
   if not self.stopped:
    assert self.m.reg_read(R.UC_X86_REG_EIP)==DONE,'instruction cap'
    assert self.m.reg_read(R.UC_X86_REG_ESP)==STACK,'unbalanced trainer/module call'
@@ -157,7 +157,7 @@ class Machine:
 
 class Tests(unittest.TestCase):
  def test_01_red_unadapted(self):
-  # Execute EXACT selected W65R entry at its correct relocated base, but pass H2S2
+  # Execute the EXACT pinned module entry at its correct relocated base, but pass H2S2
   # host as argument without injecting real module.host (the legacy recipe).
   x=Machine();m=x.m;img,_=x.mod.image(x.base,{n:0 for n,_ in x.mod.layout['host_fields']})
   # Independent CPU run without observers, no success simulation.

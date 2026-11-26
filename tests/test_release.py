@@ -10,7 +10,9 @@ import tempfile
 import unittest
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent
+REPO = ROOT.parent
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(REPO/'tools'))
 
 class PackageTests(unittest.TestCase):
     @classmethod
@@ -19,7 +21,7 @@ class PackageTests(unittest.TestCase):
         cls.b = build
         cls.tmp = tempfile.TemporaryDirectory(prefix='ampjack-', dir=os.environ.get('TMPDIR'))
         cls.out = Path(cls.tmp.name) / 'output'
-        subprocess.run([sys.executable, str(ROOT/'build.py'), '--out', str(cls.out)], check=True)
+        subprocess.run([sys.executable, str(REPO/'tools/build.py'), '--out', str(cls.out)], check=True)
 
     @classmethod
     def tearDownClass(cls):
@@ -39,7 +41,7 @@ class PackageTests(unittest.TestCase):
     def test_reproducible(self):
         other = Path(self.tmp.name)/'repeat'
         self.b.build(other)
-        for rel in ('manifest.json', 'SHA256SUMS', self.b.ZIP_NAME, 'candidate/'+self.b.NAMES[0], 'candidate/'+self.b.NAMES[1]):
+        for rel in ('manifest.json', 'SHA256SUMS', self.b.ZIP_NAME, self.b.PAIR+'/'+self.b.NAMES[0], self.b.PAIR+'/'+self.b.NAMES[1]):
             self.assertEqual((self.out/rel).read_bytes(), (other/rel).read_bytes(), rel)
 
     def test_sources_and_payload_rejections(self):
@@ -54,25 +56,25 @@ class PackageTests(unittest.TestCase):
     def test_archive_inventory_and_sums(self):
         import zipfile, hashlib
         with zipfile.ZipFile(self.out/self.b.ZIP_NAME) as z:
-            self.assertEqual(sorted(z.namelist()), sorted(['candidate/'+n for n in self.b.NAMES]+['README.md','COPYING.GPL-3','NOTICES.txt','manifest.json']))
+            self.assertEqual(sorted(z.namelist()), sorted([self.b.PAIR+'/'+n for n in self.b.NAMES]+['README.md','COPYING.GPL-3','NOTICES.txt','manifest.json']))
             for name in z.namelist():
                 self.assertEqual(z.read(name), (self.out/name).read_bytes())
         for line in (self.out/'SHA256SUMS').read_text().splitlines():
             digest, name = line.split('  ')
             self.assertEqual(hashlib.sha256((self.out/name).read_bytes()).hexdigest(), digest)
 
-# The original real-wrapper suite is loaded only with explicitly supplied game.
+# The CPU-emulated trainer suite runs only with an explicitly supplied game XBE.
 # No replacement/fabricated title data is used when the XBE is absent.
 def load_tests(loader, tests, pattern):
     suite = loader.loadTestsFromTestCase(PackageTests)
     if os.environ.get('AMPJACK_TEST_XBE'):
         import wrapper_harness as h
         import build
-        h.OUT = Path(os.environ.get('AMPJACK_TEST_OUT', ROOT/'dist'))
+        h.OUT = Path(os.environ.get('AMPJACK_TEST_OUT', REPO/'build'))
         build.build(h.OUT)
         suite.addTests(loader.loadTestsFromTestCase(h.Tests))
     else:
-        print('Strict actual-wrapper CPU tests NOT RUN: set AMPJACK_TEST_XBE to owner-supplied pinned XBE.')
+        print('CPU-emulated trainer tests NOT RUN: set AMPJACK_TEST_XBE to a stock Halo 2 u803 default.xbe.')
     return suite
 
 if __name__ == '__main__':

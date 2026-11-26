@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Pure host helpers from work/32; no live console adapter.
+# Pure host helpers; no live console adapter.
 import hashlib
 import json
 import struct
 from pathlib import Path
 
-FROZEN_XBE = None  # Caller must explicitly supply an owner-provided XBE.
+FROZEN_XBE = None  # Caller must explicitly supply a stock XBE.
 FROZEN_XBE_SHA256 = '21b207e7efdacaf6124a0822837f8be570766a42505057f7fd2d2ba8f409c4fd'
 XBE_LOAD = 0x10000
 HEADER_GUARD_LEN = 0x178           # image header through the cert pointer area
@@ -21,7 +21,7 @@ HOOK_SITES = {
     'XInputGetState':        (0x00413C4C, bytes.fromhex('535633dbff'), 10, 4),
     'XInputSetState':        (0x00413CBF, bytes.fromhex('8b4c24048d'), 10, 5),
 }
-# Required bindings (worker26 bindings.json; independently pinned by parent).
+# Required bindings (pinned from the stock u803 XBE).
 REQUIRED_BINDINGS = {
     'submit_request': 0x004155BF, 'findclassdriver': 0x0041517D,
     'add_complete': 0x00416992, 'remove_complete': 0x004165C6,
@@ -31,9 +31,9 @@ REQUIRED_BINDINGS = {
 OPTIONAL_ZERO = ('cancel_request',)           # unused by the close-based transport
 METHOD_GUARD_LEN = 10                          # prologue bytes compared live
 KE_TICK_COUNT_ORDINAL = 156                    # INFERENCE: xboxkrnl export table
-# F6 critical span (work/32): the title's own kernel import SLOTS the module calls
+# F6 critical span: the title's own kernel import SLOTS the module calls
 # through. Ordinals pinned from the frozen XBE thunk table + XDK 5849 xboxkrnl.lib
-# import records (work/32 tools/pin_irql.py): 129 _KeRaiseIrqlToDpcLevel@0 (stdcall),
+# import records: 129 _KeRaiseIrqlToDpcLevel@0 (stdcall),
 # 161 @KfLowerIrql@4 (fastcall, CL). Required for any layout that declares them.
 IRQL_SLOTS = {'irql_raise_slot': (0x0041B700, 129), 'irql_lower_slot': (0x0041B6FC, 161)}
 
@@ -313,7 +313,7 @@ class Pins:
         return self.raw[ra + va - v:ra + va - v + n]
 
     def verify_clock_receipt(self, getter_va, slot_va, ordinal):
-        """Check a parent clock receipt: SDK GetTickCount body `A1 <slot> 8B 00 C3`
+        """Check a clock receipt: SDK GetTickCount body `A1 <slot> 8B 00 C3`
         reading an import slot whose thunk ordinal is KeTickCount. u32 __stdcall."""
         _need(self.read(getter_va, 8) == b'\xa1' + struct.pack('<I', slot_va) + b'\x8b\x00\xc3',
               'clock getter is not mov eax,[slot]; mov eax,[eax]; ret')

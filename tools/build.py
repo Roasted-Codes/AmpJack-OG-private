@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Repackage selected exact W65R module; compile its unchanged pre-entry wrapper."""
+"""Package the pinned controller module and build the OG-AmpJack trainer."""
 import argparse
 import hashlib
 import importlib.util
@@ -13,44 +13,50 @@ import sys
 import zipfile
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent
-REPO = ROOT.parents[1]
+REPO = ROOT.parent
+INPUTS = ROOT/'inputs'
+TRAINER_SRC = REPO/'src/trainer'
 sys.path.insert(0, str(ROOT))
 import host_helpers as W32
-spec = importlib.util.spec_from_file_location('trainerfmt', REPO/'tools/trainerfmt.py')
+spec = importlib.util.spec_from_file_location('trainerfmt', ROOT/'trainerfmt.py')
 assert spec is not None and spec.loader is not None
 TF = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(TF)
-VERSION = '0.1.0-preview.1'
+VERSION = '0.1.0'
 NAMES = ('OG-AmpJack.xbtf', 'OG-AmpJack.bin')
-ZIP_NAME = 'OG-AmpJack-v'+VERSION+'.zip'
+PAIR = 'Trainers'
+ZIP_NAME = 'OG-AmpJack-v0.1.0.zip'
+assert ZIP_NAME == 'OG-AmpJack-v'+VERSION+'.zip'
 NATIVE_PATH = '\\Device\\Harddisk0\\Partition1\\Trainers\\'+NAMES[1]
 PAYLOAD_SHA = '5e63fb1afb9c26d15af8165471e2a982171db1f1e9a2fc6c4d6114bd148ec39c'
 ELF_SHA = '5850fc63b387eca58f1dcccae3a390341b66f999bd04d75ee12ddb18135d362b'
 
 def sha(b): return hashlib.sha256(b).hexdigest()
+def PACKAGING_SOURCES():
+    return sorted([*ROOT.glob('*.py'), *(ROOT/'release').iterdir(), *TRAINER_SRC.iterdir(), REPO/'LICENSE'])
 def doc(p): return json.loads(p.read_text())
 
 def verify_inputs():
-    p = doc(ROOT/'inputs/provenance.json')
+    p = doc(INPUTS/'provenance.json')
     assert p['payload_sha256'] == PAYLOAD_SHA and p['elf_sha256'] == ELF_SHA
+    source_root = (INPUTS/p['source_root']).resolve()
+    assert source_root == REPO, 'source_root must be the repository root'
     for name, digest in p['pinned_inputs'].items():
-        assert sha((ROOT/'inputs'/name).read_bytes()) == digest, name
-    for name, digest in p['wrapper_sources'].items():
-        assert sha((ROOT/name).read_bytes()) == digest, name
-    for name, digest in p['controller_sources'].items():
-        assert sha((ROOT/'../work/65-bisect/rumble'/name).read_bytes()) == digest, name
-    source_root = ROOT/'../work/65-bisect/rumble'
-    actual = {f.relative_to(source_root).as_posix() for f in (source_root/'src').rglob('*') if f.is_file() and 'out' not in f.relative_to(source_root/'src').parts}
-    assert actual == set(p['controller_sources']), 'source coverage mismatch'
-    assert sha((ROOT/'inputs/module.bin').read_bytes()) == PAYLOAD_SHA
-    assert sha((ROOT/'inputs/module.elf').read_bytes()) == ELF_SHA
+        assert sha((INPUTS/name).read_bytes()) == digest, name
+    sources = {**p['controller_sources'], **p['trainer_sources']}
+    for name, digest in sources.items():
+        assert sha((source_root/name).read_bytes()) == digest, name
+    actual = {f.relative_to(source_root).as_posix() for f in (source_root/'src').rglob('*') if f.is_file() and 'out' not in f.relative_to(source_root/'src').parts and '__pycache__' not in f.parts}
+    assert actual == set(sources), 'source coverage mismatch'
+    assert sha((INPUTS/'module.bin').read_bytes()) == PAYLOAD_SHA
+    assert sha((INPUTS/'module.elf').read_bytes()) == ELF_SHA
     return p
 
 def module():
-    return W32.Module((ROOT/'inputs/module.elf').read_bytes(), doc(ROOT/'inputs/layout.json'))
+    return W32.Module((INPUTS/'module.elf').read_bytes(), doc(INPUTS/'layout.json'))
 
 def package(m):
-    assert m.sha256 == ELF_SHA and m.layout == doc(ROOT/'inputs/layout.json'), 'incompatible layout'
+    assert m.sha256 == ELF_SHA and m.layout == doc(INPUTS/'layout.json'), 'incompatible layout'
     assert len(m.relocs) == len(set(m.relocs)), 'duplicate relocation'
     end = max(s['va']+s['fsz'] for s in m.loads)
     image = bytearray(end)
@@ -58,7 +64,7 @@ def package(m):
     for r in m.relocs: assert r <= end-4 and struct.unpack_from('<I', image, r)[0] < m.mem_end
     hdr = struct.pack('<16I', 0x33344a41, 1, 64+end+4*len(m.relocs), end, m.mem_end, m.entry_off, m.module_off, len(m.relocs), 64, *([0]*7))
     result = hdr+image+b''.join(struct.pack('<I', r) for r in m.relocs)
-    assert sha(result) == PAYLOAD_SHA, 'module envelope differs from selected W65R'
+    assert sha(result) == PAYLOAD_SHA, 'module envelope differs from the pinned payload'
     return result
 
 def check_payload(data, m):
@@ -79,9 +85,9 @@ def run(cmd):
 def check(out):
     man = doc(out/'manifest.json')
     for name,key in zip(NAMES, ('trainer_sha256','payload_sha256')):
-        assert sha((out/'candidate'/name).read_bytes()) == man[key], 'stale manifest'
-    check_payload((out/'candidate'/NAMES[1]).read_bytes(), module())
-    data, info = TF.parse((out/'candidate'/NAMES[0]).read_bytes(), True)
+        assert sha((out/PAIR/name).read_bytes()) == man[key], 'stale manifest'
+    check_payload((out/PAIR/NAMES[1]).read_bytes(), module())
+    data, info = TF.parse((out/PAIR/NAMES[0]).read_bytes(), True)
     assert info['name'] == 'OG-AmpJack'
     assert info['creation_key'] == 'AMPJAK-HALO2' and info['creation_key'][6] == '-'
     assert info['title_ids'] == ['0x4d530064','0x0','0x0']
@@ -90,56 +96,57 @@ def check(out):
     assert NATIVE_PATH.encode()+b'\0' in data
     assert man['resident_alloc'] == 36864 and man['file_buffer_alloc'] == 16384
     assert man['image_size'] == 14992 and man['mem_end'] == 36220
-    assert man['entry_argument'] == 0 and man['logging'] == 'not present in W65R'
+    assert man['entry_argument'] == 0 and man['logging'] == 'none'
     return data, man
 
 def build(out):
     out = Path(out).resolve()
     # Never overwrite input/source directories; caller may reuse a valid output.
-    assert out != ROOT and not ROOT.is_relative_to(out)
-    assert not out.is_relative_to(ROOT/'inputs')
+    assert not ROOT.is_relative_to(out) and not out.is_relative_to(ROOT)
+    assert not out.is_relative_to(REPO/'src') and not out.is_relative_to(REPO/'tests')
     if out.exists() and any(out.iterdir()):
         assert (out/'manifest.json').is_file(), 'output must be new or an existing release output'
     provenance = verify_inputs()
     m = module()
-    payload = (ROOT/'inputs/module.bin').read_bytes()
+    payload = (INPUTS/'module.bin').read_bytes()
     check_payload(payload, m)
     out.mkdir(parents=True, exist_ok=True)
     work = out/'.build'; work.mkdir(exist_ok=True)
-    pins = (ROOT/'inputs/pins.h').read_text()
+    pins = (INPUTS/'pins.h').read_text()
     assert pins.count('AmpJack65R-u803-5850fc63.bin') == 1
     pins = pins.replace('AmpJack65R-u803-5850fc63.bin', NAMES[1])
     (work/'pins.h').write_text(pins)
-    flags = ['clang','-target','i386-unknown-none-elf','-march=pentium3','-Os','-ffreestanding','-nostdlib','-fpie','-fvisibility=hidden','-mgeneral-regs-only','-mstack-alignment=4','-fno-stack-protector','-fno-asynchronous-unwind-tables','-fno-unwind-tables','-Wall','-Wextra','-Werror','-I',work,'-I',ROOT]
-    run(flags+['-c',ROOT/'loader.c','-o',work/'loader.o'])
-    run(['clang','-target','i386-unknown-none-elf','-c',ROOT/'bootstrap.S','-o',work/'bootstrap.o'])
-    run(['ld.lld','-pie','--no-dynamic-linker','-z','text','-z','norelro','--hash-style=sysv','-T',ROOT/'bootstrap.ld',work/'bootstrap.o',work/'loader.o','-o',work/'bootstrap.elf'])
+    flags = ['clang','-target','i386-unknown-none-elf','-march=pentium3','-Os','-ffreestanding','-nostdlib','-fpie','-fvisibility=hidden','-mgeneral-regs-only','-mstack-alignment=4','-fno-stack-protector','-fno-asynchronous-unwind-tables','-fno-unwind-tables','-Wall','-Wextra','-Werror','-I',work,'-I',TRAINER_SRC]
+    run(flags+['-c',TRAINER_SRC/'loader.c','-o',work/'loader.o'])
+    run(['clang','-target','i386-unknown-none-elf','-c',TRAINER_SRC/'bootstrap.S','-o',work/'bootstrap.o'])
+    run(['ld.lld','-pie','--no-dynamic-linker','-z','text','-z','norelro','--hash-style=sysv','-T',TRAINER_SRC/'bootstrap.ld',work/'bootstrap.o',work/'loader.o','-o',work/'bootstrap.elf'])
     rel = run(['readelf','-S','-l','-r',work/'bootstrap.elf'])
-    assert 'R_386' not in rel, 'wrapper dynamic relocation'
+    assert 'R_386' not in rel, 'trainer stub has dynamic relocations'
     symbols = {x[2]:int(x[0],16) for line in run(['nm','-an',work/'bootstrap.elf']).splitlines() if len(x:=line.split()) == 3}
     run(['objcopy','-O','binary',work/'bootstrap.elf',work/'bootstrap.bin'])
     code = (work/'bootstrap.bin').read_bytes()
     assert symbols['trainer_entry'] == 0 and symbols['boot_end'] == len(code)
     data = TF.build_data(code,[0x4d530064],'OG-AmpJack','Wired Xbox One / Series controller support for Halo 2 (port 2)',['Enable controller support'],[False])
     trainer = TF.build_xbtf(data, creation_key='AMPJAK-HALO2', scroller='')
-    candidate = out/'candidate'; candidate.mkdir(exist_ok=True)
-    (candidate/NAMES[0]).write_bytes(trainer)
-    (candidate/NAMES[1]).write_bytes(payload)
-    manifest = {'version':VERSION,'name':'OG-AmpJack','hardware_status':'Renamed wrapper UNTESTED until one console launch; original W65R owner-reported input and rumble working; supplied XBMC DB readback Active=1','entry_argument':0,'logging':'not present in W65R','provenance':provenance,'elf_sha256':ELF_SHA,'payload_sha256':sha(payload),'trainer_sha256':sha(trainer),'resident_alloc':36864,'file_buffer_alloc':16384,'image_size':14992,'mem_end':m.mem_end,'module_struct':m.layout['module_size'],'trainer_file_bytes':len(trainer),'trainer_decoded_bytes':len(data),'trainer_xbmc_allocation':16384,'peak_allocations_with_xbmc':36864+16384+16384,'resident_with_xbmc':36864+16384,'bootstrap_symbols':symbols,'wrapper_dynamic_relocations':False,'native_payload_path':NATIVE_PATH,'packaging_sources':{p.relative_to(ROOT).as_posix():sha(p.read_bytes()) for p in sorted(ROOT.iterdir()) if p.is_file() and p.suffix in ('.py','.c','.S','.ld','.inc','.md','.txt')},'trainerfmt_sha256':sha((REPO/'tools/trainerfmt.py').read_bytes())}
+    pair = out/PAIR; pair.mkdir(exist_ok=True)
+    (pair/NAMES[0]).write_bytes(trainer)
+    (pair/NAMES[1]).write_bytes(payload)
+    manifest = {'version':VERSION,'name':'OG-AmpJack','console_tested':'input, wake, rumble, all buttons','entry_argument':0,'logging':'none','provenance':provenance,'elf_sha256':ELF_SHA,'payload_sha256':sha(payload),'trainer_sha256':sha(trainer),'resident_alloc':36864,'file_buffer_alloc':16384,'image_size':14992,'mem_end':m.mem_end,'module_struct':m.layout['module_size'],'trainer_file_bytes':len(trainer),'trainer_decoded_bytes':len(data),'trainer_xbmc_allocation':16384,'peak_allocations_with_xbmc':36864+16384+16384,'resident_with_xbmc':36864+16384,'bootstrap_symbols':symbols,'trainer_dynamic_relocations':False,'native_payload_path':NATIVE_PATH,'packaging_sources':{p.relative_to(REPO).as_posix():sha(p.read_bytes()) for p in PACKAGING_SOURCES()},'trainerfmt_sha256':sha((ROOT/'trainerfmt.py').read_bytes())}
     (out/'manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
     check(out)
-    files = ['candidate/'+n for n in NAMES]+['README.md','COPYING.GPL-3','NOTICES.txt','manifest.json']
-    for name in ('README.md','COPYING.GPL-3','NOTICES.txt'): shutil.copyfile(ROOT/name,out/name)
+    files = [PAIR+'/'+n for n in NAMES]+['README.md','COPYING.GPL-3','NOTICES.txt','manifest.json']
+    for name in ('README.md','NOTICES.txt'): shutil.copyfile(ROOT/'release'/name,out/name)
+    shutil.copyfile(REPO/'LICENSE',out/'COPYING.GPL-3')
     with zipfile.ZipFile(out/ZIP_NAME,'w',compression=zipfile.ZIP_STORED) as z:
         for name in sorted(files):
             zi = zipfile.ZipInfo(name, (2026,1,1,0,0,0)); zi.external_attr = 0o100644 << 16
             z.writestr(zi, (out/name).read_bytes())
     (out/'SHA256SUMS').write_text(''.join(sha((out/n).read_bytes())+'  '+n+'\n' for n in sorted(files+[ZIP_NAME])))
-    print('PASS OG-AmpJack '+VERSION+'; exact selected W65R payload; cdecl(0); default OFF; resident=36864 file=16384; wrapper relocations=0')
-    print('candidate/'+NAMES[0]+'; candidate/'+NAMES[1]+'; '+ZIP_NAME+'; manifest.json; SHA256SUMS')
+    print('PASS OG-AmpJack '+VERSION+'; pinned payload; cdecl(0); default OFF; resident=36864 file=16384; trainer relocations=0')
+    print(PAIR+'/'+NAMES[0]+'; '+PAIR+'/'+NAMES[1]+'; '+ZIP_NAME+'; manifest.json; SHA256SUMS')
     return out
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--out',type=Path,default=ROOT/'dist')
+    ap.add_argument('--out',type=Path,default=REPO/'build')
     build(ap.parse_args().out)

@@ -1,26 +1,17 @@
 # build output
+build/
+dist/
 out/
-*.exe
-*.basefile
 *.o
-# Microsoft adapter firmware: never commit it
-*.bin
-# get-firmware.ps1 output
-/Apps/
-linux/xadapter
-linux/uECC.o
 __pycache__/
 *.pyc
-dist/
-_console_backups/
-research/dumps/
-desktop/xwired
-*.dSYM/
+# binaries: only the pinned module inputs are tracked
+*.bin
+*.elf
+*.xbtf
+*.zip
+!tools/inputs/module.bin
+!tools/inputs/module.elf
+# never commit game files or logs
+*.xbe
 *.log
-*.wav
-*.raw
-# duplicates a sync tool makes ("name 2.ext"): never commit
-* 2.*
-* 2
-# the surround demo clip (tools/demo/make_demo.py makes it, 7.9 MB): never commit it
-*.demo

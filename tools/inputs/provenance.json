@@ -1,7 +1,7 @@
 {
-  "version": "0.1.0-preview.1",
-  "variant": "W65 rumble-only (W65R); owner-selected",
-  "source_root": "../work/65-bisect/rumble",
+  "version": "0.1.0",
+  "variant": "rumble-capable controller module",
+  "source_root": "../..",
   "elf_sha256": "5850fc63b387eca58f1dcccae3a390341b66f999bd04d75ee12ddb18135d362b",
   "payload_sha256": "5e63fb1afb9c26d15af8165471e2a982171db1f1e9a2fc6c4d6114bd148ec39c",
   "old_trainer_sha256": "977dee0576b8dd5400dc3433afdb997d368ef60ac9ed7fef82c5bf21c40468d2",
@@ -34,9 +34,15 @@
     "src/ogxbox/integration/string.c": "22c9935e139da65fa8e88d67b7a02e358c1c6d70cdc1852b59584d88d4d216e4",
     "src/ogxbox/integration/trampoline.S": "bf0acaf93aeac7027ba48e49c6c3a4d6d7c4e83f998b59fc2a9e5048aa2e3ffa"
   },
+  "trainer_sources": {
+    "src/trainer/loader.c": "ea603a54d21e14250e67e0e291288caee83677bca11d3e4e5f267a986d75dd77",
+    "src/trainer/bootstrap.S": "b3173ac5d50796db333cd8ef05572d717461bd94503911d7932a5dc847415dc4",
+    "src/trainer/bootstrap.ld": "653bb232fb8ab33926e961dea87ead2c601f2d699522172129ef4da90b49a43c",
+    "src/trainer/sha256.inc": "9400e0820f4eb3a5634e8eadbff0755b25b6e55867a4635a6679cc3319b6e817"
+  },
   "source_coverage": {
-    "original_files": 27,
-    "tracked_files": 27,
+    "controller_files": 27,
+    "trainer_files": 4,
     "exact_match": true,
     "excluded_directories": [
       "src/**/out"
@@ -48,27 +54,7 @@
     "layout.json": "c9a20f759de834819aaefffc3ffc5e067df819ec8f91483857150d09bf470d0b",
     "pins.h": "dacf43d3285cde6d93240befc3f14ada5e64236c2bfc47026cd7865e3d81108a"
   },
-  "wrapper_sources": {
-    "loader.c": "ea603a54d21e14250e67e0e291288caee83677bca11d3e4e5f267a986d75dd77",
-    "bootstrap.S": "b3173ac5d50796db333cd8ef05572d717461bd94503911d7932a5dc847415dc4",
-    "bootstrap.ld": "653bb232fb8ab33926e961dea87ead2c601f2d699522172129ef4da90b49a43c",
-    "sha256.inc": "9400e0820f4eb3a5634e8eadbff0755b25b6e55867a4635a6679cc3319b6e817"
-  },
-  "original_wrapper_sources": {
-    "loader.c": "ea603a54d21e14250e67e0e291288caee83677bca11d3e4e5f267a986d75dd77",
-    "bootstrap.S": "b3173ac5d50796db333cd8ef05572d717461bd94503911d7932a5dc847415dc4",
-    "bootstrap.ld": "653bb232fb8ab33926e961dea87ead2c601f2d699522172129ef4da90b49a43c",
-    "sha256.inc": "9400e0820f4eb3a5634e8eadbff0755b25b6e55867a4635a6679cc3319b6e817"
-  },
-  "wrapper_change": "No source changes; generated pins payload filename and XBTF display title renamed only",
+  "trainer_change": "No source changes; generated pins.h payload filename and XBTF display title renamed only",
   "payload_contains_own_path": false,
-  "selected_live_evidence": {
-    "origin": "Owner decision supplied in task; Discord 1575345691214086249; not independently queried by package tests",
-    "xbmc_path": "E:\\Trainers\\AmpJack65R-u803-5850fc63.xbtf",
-    "Active": 1,
-    "settings": "1",
-    "other_ampjack_rows_active": 0,
-    "owner_report": "input and rumble working"
-  },
-  "hardware_status": "Renamed wrapper hardware UNTESTED until one console launch; original W65R owner-reported working"
+  "console_tested": "input, wake, rumble, all buttons"
 }
