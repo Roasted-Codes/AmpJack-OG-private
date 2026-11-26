@@ -8,7 +8,7 @@
 ## Tested
 
 - Owner's console (hard-modded original Xbox, Cerbios, XBMC): modern pad on port 2 gives full input and rumble; the original controller on port 1 keeps working alongside it. Tested pad: Xbox Series controller (`045e:0b12`) over a passive cable.
-- The shipped module bytes are identical to that tested build. The renamed `OG-AmpJack` wrapper passed reproducible build and CPU-emulated tests (two load addresses, title/payload guards, rollback, fail-stop); one console launch confirms the renamed files.
+- The shipped module bytes are identical to that tested build. The released `OG-AmpJack` files were launched on the console: input and rumble confirmed. They also pass reproducible build and CPU-emulated tests (two load addresses, title/payload guards, rollback, fail-stop).
 
 ## Known limits
 

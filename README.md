@@ -6,7 +6,7 @@ Use a wired **Xbox One / Series controller** on an **original Xbox** through a p
 
 ## What works
 
-- Modern pad on **port 2**: sticks, buttons, triggers and rumble, tested on real hardware.
+- Modern pad on **port 2**: sticks, buttons, triggers and rumble. This exact release was tested on real hardware.
 - Original controller on port 1 keeps working normally.
 - Nothing is flashed or patched on disk: XBMC loads the trainer when you launch Halo 2 and the game files stay untouched.
 
