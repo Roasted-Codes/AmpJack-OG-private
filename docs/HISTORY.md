@@ -1,0 +1,7 @@
+# History
+
+OG-AmpJack started as a fork of the AmpJack codebase, which adds wired Xbox One / Series controllers and headset audio to the Xbox 360 (itself a fork of Jacckii's Xbox360-Series-Controllers-Native). The GIP protocol code in `src/core/`, ported from xone, came over unchanged; everything specific to the original Xbox was written for this port.
+
+The original Xbox has no driver for these pads, and games link their own copy of the XInput library. The port therefore became a trainer: XBMC loads a small stub at launch, the stub checks that the executable is stock Halo 2 TU1.5 (u803), loads the controller module from `E:\Trainers\` and hooks the game's statically linked XInput functions and USB class-driver lookup. The module drives the pad over the console's USB host with GIP (handshake, input polling, rumble) and presents it to the game as an ordinary controller on port 2, while calls for the original controllers go to the game's own code.
+
+Along the way the work included USB descriptor captures of a real pad, a survey of adapter-based alternatives, xemu USB passthrough research, standalone loader and driver probes, and CPU-emulated tests of the trainer against the real game image. Several trainer builds were tried before the rumble-capable one became the release: a first input-only build, a variant with on-console logging, and separate wake and rumble builds. The rumble-capable module ships unchanged as 0.1.0.
