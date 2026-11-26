@@ -1,32 +1,34 @@
 # OG-AmpJack build and test notes
 
-## Portable package build
+## Rebuild the package
 
-Requires Python 3, Clang, ld.lld and GNU binutils on PATH. From a clean private checkout:
+Requires Python 3, Clang, ld.lld and GNU binutils (`readelf`, `nm`, `objcopy`) on PATH. From a clean checkout:
 
 ```sh
 /usr/bin/python3 ogxbox/halo2-release/build.py --out ogxbox/halo2-release/dist
 /usr/bin/python3 -m unittest discover -s ogxbox/halo2-release -p test_release.py
 ```
 
-These commands package a pinned, own-code module and rebuild the trainer wrapper. They need no original development directory, SDK, game executable or console. This is **not** a portable full controller rebuild from C; the historical module build still has separate toolchain/helper/metadata requirements. See the [release source map](../ogxbox/halo2-release/README.md).
+This rebuilds the trainer wrapper around the pinned controller module (`ogxbox/halo2-release/inputs/module.{elf,bin}`) and produces the matched `candidate/OG-AmpJack.{xbtf,bin}` pair, the versioned ZIP, `manifest.json` and `SHA256SUMS`. No SDK, game executable or console is needed. The build is deterministic for the same sources and toolchain.
 
-Output: `ogxbox/halo2-release/dist/`, including the matched `candidate/OG-AmpJack-Halo2.{xbtf,bin}` pair, versioned ZIP, manifest and SHA256SUMS. `--out` may point to a new directory. Committed module/source identities must match; packaging is not permission to silently substitute a new driver build.
+This is **not** a from-scratch rebuild of the controller module in C; that lives in `ogxbox/work/65-bisect/rumble/` with its own toolchain requirements. The packaging verifies every source file's hash against `inputs/provenance.json` and refuses to substitute a different module.
 
-## Actual-wrapper CPU tests
+## CPU-emulated wrapper tests
 
-Install Python Unicorn and explicitly provide your own stock u803 executable:
+Install Python Unicorn and point the tests at your own stock u803 executable (it is hashed, never copied):
 
 ```sh
-AMPJACK_TEST_XBE=/path/to/owner/default.xbe /usr/bin/python3 -m unittest discover -s ogxbox/halo2-release -p test_release.py
+AMPJACK_TEST_XBE=/path/to/default.xbe /usr/bin/python3 -m unittest discover -s ogxbox/halo2-release -p test_release.py
 ```
 
-The test validates the external game's SHA-256. Never add the game to Git or the archive. Without that environment variable, strict CPU tests are explicitly not run; the package-only checks do not invent title data.
+Without `AMPJACK_TEST_XBE` only the four package tests run. With it, 11 tests execute the real generated wrapper against the real game image at two load addresses: hook installation, default-OFF, title and payload mismatch, missing/corrupt payload, allocation/I-O failure, rollback and fail-stop. Kernel and file effects are host stubs, not a real Xbox.
 
-Qualification executed the actual generated wrapper and selected module: two load addresses, all hook destinations, entry flags forced zero even if bytes after the single option are nonzero, default OFF, title/payload mismatches, missing payload, rollback and permanent-failure fail-stop. Parent verification reproduced 4 package tests and 13 tests with the explicitly supplied owner XBE (4 package plus 9 CPU methods), including 20 rejection scenarios and 12 additional import-rejection cases. Fresh-export and integrated builds reproduced the selected deliverables byte-for-byte. Kernel/file/allocation effects are host stubs, not a physical Xbox.
+`verify_export.py --xbe ...` repeats the whole thing from a fresh Git-visible export and checks the rebuilt artifacts are byte-identical to `dist/`.
 
-## Source and identities
+## Identities
 
-The selected source is [`../ogxbox/work/63-wake-rumble/src/`](../ogxbox/work/63-wake-rumble/src/). Packaging preserves payload SHA-256 `8bf54869e1635fbcb8313226da7abd243c0b4fc4729b1b664f2828e030380448` and original ELF `3ddc05b8c0c01a388ad9ab156660c8018a8a3d0fe4cc676af7548a5405ec7fab`. Only the wrapper/display/path changes; logging is forced OFF to match the identified live session. Resident/file-buffer allocation stays 45056/24576 bytes, not the smaller W65 experiment's allocations.
+- Module ELF `5850fc63b387eca58f1dcccae3a390341b66f999bd04d75ee12ddb18135d362b`
+- Payload `OG-AmpJack.bin` `5e63fb1afb9c26d15af8165471e2a982171db1f1e9a2fc6c4d6114bd148ec39c`
+- Source: [`ogxbox/work/65-bisect/rumble/src/`](../ogxbox/work/65-bisect/rumble/src/)
 
-The owner's successful input/rumble report applies to the original pair whose code was read back live. Renamed-wrapper host qualification and physical acceptance are separate. Preserve source attribution and license files; no BIOS flash, SDK redistribution or game upload is needed.
+Preserve license and attribution files; no BIOS, SDK or game content is redistributed.

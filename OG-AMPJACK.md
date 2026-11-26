@@ -1,28 +1,22 @@
 # OG-AmpJack source map
 
-## One selected baseline
+## The shipped build
 
-The user's live Halo 2 session was identified by read-only hook and code-section comparison as **AmpJack63-u803-3ddc05b8** (W63 combined module), with logging OFF. Input and vibration are owner-reported working. The earlier assumption that the preferred session was W65 RUMBLE-ONLY was incorrect.
+The released trainer is the **AmpJack65 rumble-only module** (internal name W65R), the build the owner runs and has verified on hardware for input and rumble. Packaging only renames the wrapper to `OG-AmpJack.{xbtf,bin}` and sets the display title; the controller module bytes are unchanged.
 
 | Path | Purpose |
 |---|---|
-| [`ogxbox/work/63-wake-rumble/src/`](ogxbox/work/63-wake-rumble/src/) | Exact controller source lineage selected by live readback. |
-| [`ogxbox/halo2-release/`](ogxbox/halo2-release/) | Portable packaging of that pinned module; normal installation names, tests and matched preview files. |
-| [`ogxbox/integration/`](ogxbox/integration/), [`gipdriver/`](ogxbox/gipdriver/), [`gip/`](ogxbox/gip/), [`halo2/`](ogxbox/halo2/) | Earlier base implementation and protocol/model work. |
-| `ogxbox/work/32-*`, `43-*`, `65-bisect/` | Historical lineage and experiments; not parallel maintained releases. |
-| `core/`, `tools/trainerfmt.py` | Shared protocol/format code; keep dependencies and notices. |
+| [`ogxbox/work/65-bisect/rumble/src/`](ogxbox/work/65-bisect/rumble/src/) | Exact controller source lineage of the shipped module. |
+| [`ogxbox/halo2-release/`](ogxbox/halo2-release/) | Portable packaging: pinned module, wrapper build, tests and the released `dist/` files. |
+| [`ogxbox/integration/`](ogxbox/integration/), [`gipdriver/`](ogxbox/gipdriver/), [`gip/`](ogxbox/gip/), [`halo2/`](ogxbox/halo2/) | Base implementation: GIP (modern pad) driver, Halo 2 hook sites and the XInput presentation model. |
+| `ogxbox/work/*` | Development history (research, experiments, earlier trainer candidates). Not maintained releases. |
+| `core/`, `tools/trainerfmt.py` | Shared protocol/format code and the XBMC trainer file format. |
 | `xbox360/` and inherited non-OG docs | Historical AmpJack360 snapshot, not OG install instructions. |
 
-The historical root `SOURCE-MANIFEST.json` describes the initial source upload; new release manifests describe the promoted artifacts. No old Git history is rewritten.
+## Shipped module identity
 
-## Selected module identity
+- Module ELF: `5850fc63b387eca58f1dcccae3a390341b66f999bd04d75ee12ddb18135d362b`
+- Payload `OG-AmpJack.bin`: `5e63fb1afb9c26d15af8165471e2a982171db1f1e9a2fc6c4d6114bd148ec39c` (byte-identical to the hardware-tested `AmpJack65R-u803-5850fc63.bin`)
+- Resident / file-buffer allocations: 36864 / 16384 bytes.
 
-- ELF: `3ddc05b8c0c01a388ad9ab156660c8018a8a3d0fe4cc676af7548a5405ec7fab`
-- Payload: `8bf54869e1635fbcb8313226da7abd243c0b4fc4729b1b664f2828e030380448`
-- Original trainer: `3685f5680425fb72ec48acfd6c347e0f5d76c320352ee1d02d1ff76e5b6ed23d`
-- Live code-section SHA-256: `3538c20e7fe0382bb450e1c6af113a193c8a2cb08118a7e44a2991c80a0f52a9`
-- Selected resident/file-buffer allocations: 45056 / 24576 bytes. Keeping them unchanged does not establish retail 64 MiB memory headroom.
-
-The release wrapper changes filenames/display and forces the same logging-OFF mode. It must not change controller code, rumble, wake logic, kernel code or BIOS. Its source/module/wrapper hashes are linked in the release manifest. A renamed wrapper is not automatically hardware-tested.
-
-See [compatibility](docs/OG-COMPATIBILITY.md) for the unresolved wake/IGR/launch questions and [build notes](docs/OG-BUILD.md) for the distinction between portable packaging and a full source rebuild.
+How it works, briefly: the trainer hooks six statically linked XInput functions in Halo 2 (`XGetDeviceChanges`, `XInputOpen/Close/GetCapabilities/GetState/SetState`), presents the modern pad as a virtual original controller on port 2, drives the pad over USB with the GIP protocol (handshake, 4 ms input polling, rumble), and forwards original-controller calls to the game's own code untouched. See [compatibility](docs/OG-COMPATIBILITY.md) and [build notes](docs/OG-BUILD.md).

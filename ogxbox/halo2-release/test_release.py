@@ -27,14 +27,14 @@ class PackageTests(unittest.TestCase):
 
     def test_package_identity_and_metadata(self):
         data, man = self.b.check(self.out)
-        self.assertEqual(man['payload_sha256'], '8bf54869e1635fbcb8313226da7abd243c0b4fc4729b1b664f2828e030380448')
-        self.assertEqual(man['resident_alloc'], 45056)
-        self.assertEqual(man['file_buffer_alloc'], 24576)
-        self.assertEqual(man['image_size'], 20492)
-        self.assertEqual(man['mem_end'], 43912)
-        self.assertEqual(man['module_entry_flags'], 0)
+        self.assertEqual(man['payload_sha256'], '5e63fb1afb9c26d15af8165471e2a982171db1f1e9a2fc6c4d6114bd148ec39c')
+        self.assertEqual(man['resident_alloc'], 36864)
+        self.assertEqual(man['file_buffer_alloc'], 16384)
+        self.assertEqual(man['image_size'], 14992)
+        self.assertEqual(man['mem_end'], 36220)
+        self.assertEqual(man['entry_argument'], 0)
         self.assertIn(self.b.NATIVE_PATH.encode()+b'\0', data)
-        self.assertNotIn(b'AmpJack63-u803', data)
+        self.assertNotIn(b'AmpJack65R-u803', data)
 
     def test_reproducible(self):
         other = Path(self.tmp.name)/'repeat'

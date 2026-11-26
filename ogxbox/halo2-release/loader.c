@@ -1,6 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later
- * AJ43 matched-pair pre-entry loader (W63 copy: entry argument = option flags,
- * six extra resolved-slot checks for the log file I/O + KeTickCount). No persistent globals or title pointers.
+ * AJ43 matched-pair pre-entry loader. No persistent globals or title pointers.
  * The on-disk envelope is deliberately NOT H2S2: the frozen ELF has code at
  * offset zero and cdecl entry ignores its argument, unlike H2S2 stdcall(host).
  * Preserve every original ELF virtual offset; inject its real BSS host first.
@@ -72,8 +71,8 @@ static void restore_owned(void){
 }
 /* Compiler emits a real cdecl indirect call and caller-side argument cleanup.
  * Harness observes this actual function, then executes the untouched ELF entry. */
-__attribute__((noinline)) static int adapter_call(u8 *b,u32 flags){
- return ((int(*)(u32)) (b+ENTRY_OFF))(flags);   /* W63: bit0 = write log */
+__attribute__((noinline)) static int adapter_call(u8 *b){
+ return ((int(*)(void*)) (b+ENTRY_OFF))(0);
 }
 extern u8 boot_end[] __attribute__((visibility("hidden")));
 static int region_ok(u8 *p,u32 n,u8*t){
@@ -83,14 +82,13 @@ static int region_ok(u8 *p,u32 n,u8*t){
 }
 void trainer_main(u8*t){
  u32 op=get(t+0x0a),sz=get(t),i,h=0,io[2],off[2]={0,0};
- u8 *f=0,*b=0; s32 rc;u8 extra;u32 flags;
+ u8 *f=0,*b=0; s32 rc;u8 extra;
  volatile struct {u16 len,max; const char *s;} name;
  struct {u32 root;void *name;u32 flags;} oa={0,(void*)&name,0x40};
  name.len=sizeof(payload_path)-1;name.max=sizeof(payload_path);name.s=payload_path;
  /* No cross-title state; retail/relaunch/off gates happen before I/O or alloc. */
  if(sz>15193 || op<(u32)boot_end-(u32)t || op>=sz || t[op]!=1)return;
  if(!title_ok())return;
- flags=0;   /* Preserve owner-selected live logging OFF; no second option. */
  rc=(*(s32(ST **)(u32*,u32,void*,u32*,u32,u32))0x41b654)(&h,0x80100000,&oa,io,1,0x60);
  if(rc<0)return;
  f=alloc(FILE_ALLOC);
@@ -128,7 +126,7 @@ void trainer_main(u8*t){
  /* All BSS is zero BEFORE the first 44-byte host write. */
  for(i=0;i<11;i++)V(b+MODULE_OFF+4*i)=host_values[i];
  for(i=0;i<11;i++)if(V(b+MODULE_OFF+4*i)!=host_values[i])goto free_b;
- rc=adapter_call(b,flags);
+ rc=adapter_call(b);
  if(rc==0 && hooks_ok(b))return; /* resident remains title-owned, not persisted */
  restore_owned();
 free_b:

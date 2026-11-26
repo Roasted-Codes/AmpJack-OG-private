@@ -15,7 +15,7 @@ import unicorn as U
 from unicorn import x86_const as R
 OUT=Path(os.environ.get('AMPJACK_TEST_OUT', B.ROOT/'dist'))
 T=0x800000; STACK=0xa00000; DONE=0xa80000; K=0x90000000; F=0xc00000
-EXTRA_IMPORTS=[(0x41b660,190),(0x41b658,236),(0x41b6b0,198),(0x41b624,187),(0x41b774,156),(0x41b65c,211)]
+EXTRA_IMPORTS=[]  # W65R has only the seven baseline imports, no logging imports.
 REGS=[R.UC_X86_REG_EAX,R.UC_X86_REG_ECX,R.UC_X86_REG_EDX,R.UC_X86_REG_EBX,R.UC_X86_REG_EBP,R.UC_X86_REG_ESI,R.UC_X86_REG_EDI]
 def u32(b):return struct.unpack('<I',b)[0]
 def pk(v):return struct.pack('<I',v&0xffffffff)
@@ -29,10 +29,7 @@ class Machine:
   m.mem_write(F,b'\xcc'*0x10000);m.mem_write(base,b'\xcc'*0x10000)
   d=bytearray(self.data)
   if case!='default_off':d[B.TF.u32(d,10)]=0 if case=='disabled' else 1
-  if case.startswith('adjacent_'):
-   # Not a second option: deliberately mutate the following byte to challenge
-   # the original W63 flags-reading behavior without a synthetic wrapper.
-   d[B.TF.u32(d,10)+1]=int(case.split('_')[1])
+
   if case=='bad_option':struct.pack_into('<I',d,10,0xfffffffe)
   m.mem_write(T,bytes(d))
   header=bytearray(self.pins.header)
@@ -102,7 +99,7 @@ class Machine:
    self.entered+=1
    assert self.zero_seen
    self.entry_flags.append(self.word(sp+4))
-   assert self.entry_flags[-1]==0,'actual W63 cdecl entry must receive logging flags zero'
+   assert self.entry_flags[-1]==0,'actual W65R cdecl entry must receive null argument'
    expected,_=self.mod.image(self.base,self.j['host'])
    assert self.rd(self.base,len(expected))==expected,'full relocated image/host/BSS differs from independent W32 image oracle'
    self.preimage=True
@@ -157,23 +154,10 @@ class Machine:
   assert self.rd(0x10000,0x600000)==self.stock,'rejection modified title'
   assert not self.allocs,'rejection allocation leak'
   assert not self.stopped,'unexpected fail-stop'
- def prove_logger_off(self):
-  state=self.base+self.mod.sym('ogx_log_st','object')
-  assert self.mod.symbols['ogx_log_st']['size']==28
-  assert state==self.base+0xa368
-  assert self.rd(state,28)==bytes(28),'logger not OFF after production entry'
-  before=list(self.calls)
-  for tick in (0,1,1000,0xffffffff):
-   self.m.mem_write(self.word(0x41b774),pk(tick))
-   self.m.mem_write(STACK-4,pk(DONE));self.m.reg_write(R.UC_X86_REG_ESP,STACK-4)
-   self.m.emu_start(self.base+self.mod.sym('ogx_log_service','func'),DONE,count=100000)
-   assert self.m.reg_read(R.UC_X86_REG_EIP)==DONE
-   assert self.m.reg_read(R.UC_X86_REG_ESP)==STACK
-   assert self.rd(state,28)==bytes(28)
-  assert self.calls==before,'flags-zero logger performed kernel/file I/O'
+
 class Tests(unittest.TestCase):
  def test_01_red_unadapted(self):
-  # Execute EXACT selected W63 entry at its correct relocated base, but pass H2S2
+  # Execute EXACT selected W65R entry at its correct relocated base, but pass H2S2
   # host as argument without injecting real module.host (the legacy recipe).
   x=Machine();m=x.m;img,_=x.mod.image(x.base,{n:0 for n,_ in x.mod.layout['host_fields']})
   # Independent CPU run without observers, no success simulation.
@@ -191,8 +175,7 @@ class Tests(unittest.TestCase):
   for base in (0x1000000,0x83000000):
    x=Machine(base).run();self.assertEqual(x.entered,1);self.assertTrue(x.preimage)
    self.assertEqual(x.entry_flags,[0])
-   self.assertEqual(x.allocs,{base:45056});self.assertEqual(x.peak,45056+24576)
-   x.prove_logger_off()
+   self.assertEqual(x.allocs,{base:36864});self.assertEqual(x.peak,36864+16384)
    for s in x.j['sites'].values():
     expect=B.W32.e9(s['va'],base+s['target']-x.j['base'])+bytes.fromhex(s['orig'])[5:]
     self.assertEqual(x.rd(s['va'],len(expect)),expect)
@@ -213,7 +196,7 @@ class Tests(unittest.TestCase):
   x=Machine(case='partial').run();x.reject_clean();self.assertEqual(x.entered,1);self.assertEqual(x.injected,1)
   print('PASS actual installer current-site partial write: adapter restored and verified all seven before free/stock return')
  def test_05_permanent_failure(self):
-  x=Machine(case='permanent').run();self.assertTrue(x.stopped);self.assertEqual(x.allocs,{x.base:45056})
+  x=Machine(case='permanent').run();self.assertTrue(x.stopped);self.assertEqual(x.allocs,{x.base:36864})
   print('PASS permanent restoration failure: native fail-stop, reachable allocation retained, no stock return')
  def test_06_disk_and_relaunch(self):
   Machine(case='disk_header').run()
@@ -226,19 +209,7 @@ class Tests(unittest.TestCase):
   m,_,_,_=B.inputs(Path(os.environ['AMPJACK_TEST_XBE']));p=B.package(m)
   for bad in [p[:-1],p+b'\0',p[:20],p[:64]+b'\0'+p[65:],p[:-4]+pk(0xffffffff)]:
    with self.assertRaises(ValueError):B.check_payload(bad,m)
- def test_08_single_option_cannot_enable_logging(self):
-  for base in (0x1000000,0x83000000):
-   for byte in (1,255):
-    with self.subTest(base=base,adjacent_byte=byte):
-     x=Machine(base,case='adjacent_'+str(byte)).run()
-     self.assertEqual(x.entry_flags,[0]);self.assertEqual(x.allocs,{base:45056})
-     x.prove_logger_off()
- def test_09_six_extra_import_checks(self):
-  for mode in ('missing','unresolved'):
-   for i,(slot,ordinal) in enumerate(EXTRA_IMPORTS):
-    with self.subTest(mode=mode,slot=hex(slot),ordinal=ordinal):
-     x=Machine(case='extra_'+mode+'_'+str(i)).run()
-     x.reject_clean();self.assertEqual(x.entered,0);self.assertEqual(x.calls,[])
+
 if __name__=='__main__':
  ap=argparse.ArgumentParser();ap.add_argument('--out',type=Path,default=OUT);a,rest=ap.parse_known_args();OUT=a.out.resolve()
  unittest.main(argv=[sys.argv[0]]+rest,verbosity=2)
