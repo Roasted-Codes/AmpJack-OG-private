@@ -266,7 +266,7 @@ void ogx_transport_sync(void)
 	if (g == ogx_seen_generation)
 		return;
 	ogx_seen_generation = g;
-	ogx_rumble_sent = 0;          /* W63: re-send a nonzero rumble after replug */
+	ogx_rumble_sent = 0;          /* re-send a nonzero rumble after replug */
 	ogx_stale_until  = ogx_g_module.ring.head;   /* read AFTER generation */
 	ogx_stale_active = 1;
 	ogx_gen_resyncs++;
@@ -336,7 +336,7 @@ static void ogx_bridge_publish(void)
 	}
 }
 
-/* ---- W63 rumble: ONE frame when the whole OUT path is idle (latest wins) ----
+/* ---- rumble: ONE frame when the whole OUT path is idle (latest wins) ----
  * xpad Xbox One form: 09 00 <seq> 09 | 00 0F 00 00 <L> <R> FF 00 FF, with
  * L = OG left (low-frequency) speed >> 9, R = right speed >> 9. Never between a
  * power-on and its S-init. Title thread only; the frame goes through the normal
@@ -486,7 +486,7 @@ void ogx_module_pump(void)
 	ogx_bridge_publish();
 }
 
-/* ---- status for the parent's readback (bits) ------------------------------ */
+/* ---- status for the trainer's readback (bits) ------------------------------ */
 uint32_t ogx_module_status(void)
 {
 	uint32_t s = ogx_g_module.installed_hooks;              /* bits 0..7 (0..6 XInput, 7 FindClass) */

@@ -8,7 +8,7 @@
  */
 #include "ogx_present.h"
 
-#define OGX_ERR_IO_PENDING 997u   /* ERROR_IO_PENDING (W63 SetState) */
+#define OGX_ERR_IO_PENDING 997u   /* ERROR_IO_PENDING (SetState) */
 
 /* ------------------------------------------------------------------------- */
 /* presence contract                                                          */
@@ -345,7 +345,7 @@ uint32_t ogx_XInputSetState(struct ogx_host_ctx *ctx, uintptr_t handle,
 		if (!ogx_port_present(ctx, v->port))
 			return OGX_ERR_NOT_CONNECTED;
 
-		/* W63: store the desired motor speeds (Rumble at offset 66, never
+		/* Rumble: store the desired motor speeds (Rumble at offset 66, never
 		 * the header) for the port; ogx_module_pump sends ONE GIP rumble
 		 * frame when the OUT path is idle (latest wins). The request is
 		 * complete as far as the title can observe: dwStatus = SUCCESS,

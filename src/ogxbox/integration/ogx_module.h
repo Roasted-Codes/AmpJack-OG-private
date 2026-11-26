@@ -9,7 +9,7 @@
  * NO 0x30000-method addresses from the standalone probe are carried into the
  * title: every title call goes through a VERIFIED u803 VA injected here.
  *
- * Load model: the parent trainer/injector relocates this static-PIE image
+ * Load model: the trainer injector relocates this static-PIE image
  * (R_386_RELATIVE only), fills `struct ogx_mod_host` with the VERIFIED u803 VAs,
  * calls ogx_module_entry() ONCE at title entry (BEFORE XInitDevices enumerates,
  * so install is single-threaded), then calls ogx_module_pump() every title tick
@@ -36,7 +36,7 @@
 
 /* ---- the fixed virtual slot the modern GIP pad is published on -------------- */
 /*
- * FIXED SLOT = port index 1 ("front port 2"). The owner keeps a stock pad on
+ * FIXED SLOT = port index 1 ("front port 2"). The player keeps a stock pad on
  * port 1 (index 0); the modern pad is assumed on port 2 (index 1). This is a
  * DOCUMENTED FIXED SLOT, NOT a native-derived physical port: the real
  * port-number -> front-port wiring for a non-hub GIP device is UNKNOWN on this

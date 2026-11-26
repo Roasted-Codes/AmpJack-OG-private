@@ -90,7 +90,7 @@ struct ogx_host_ctx {
 	uint32_t  (OGX_STDCALL *orig_XInputSetState)(uintptr_t handle, uintptr_t feedback);
 
 	/* Adapter snapshots: parsed GIP -> og_gamepad. Owned/driven by the transport
-	 * (worker 09); this module only READS them. */
+	 * ; this module only READS them. */
 	struct og_gip_port *ports[OGX_MAX_PORTS];
 
 	/* USB transport truth. bit i = physically attached; NEVER set by this module.
@@ -121,7 +121,7 @@ struct ogx_host_ctx {
 	uint32_t removal_edges;
 	uint32_t forged_handles;
 
-	/* W63 rumble: desired motor speeds (wLeft | wRight << 16) written by the
+	/* Rumble: desired motor speeds (wLeft | wRight << 16) written by the
 	 * virtual XInputSetState, consumed by ogx_module_pump. Title thread only. */
 	uint32_t rumble_want[OGX_MAX_PORTS];
 	uint32_t rumble_calls;        /* virtual SetState calls accepted        */

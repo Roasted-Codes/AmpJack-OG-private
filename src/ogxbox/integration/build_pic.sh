@@ -7,8 +7,8 @@
 # R_386_RELATIVE relocation is permitted (readelf -r), no text relocations
 # (-z text), and the chain trampolines hold no stale displaced PC-relative offset.
 #
-# The GIP core/adapter PIC-ness was already proven by ogxbox/loader (worker 05);
-# this build is the loadable module the parent injector stages + relocates.
+# The GIP core/adapter PIC-ness was already proven by ogxbox/loader;
+# this build is the loadable module the trainer injector stages + relocates.
 set -euo pipefail
 cd "$(dirname "$0")"
 mkdir -p out

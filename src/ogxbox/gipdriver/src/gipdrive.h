@@ -1,6 +1,6 @@
 /*
  * gipdrive.h — shared, dependency-free core of the AmpJack-OG GIP class-driver
- * transport proof (worker 11).
+ * transport proof.
  *
  * HEADER-ONLY on purpose: the SAME code compiles into (a) the Xbox title
  * (ogxbox/gipdriver/src/main.c) and (b) the host test harness
@@ -9,18 +9,18 @@
  *
  * Four parts:
  *   1. URB ABI        — the title-linked XAPILIB _URB variants, re-declared here
- *                       at the exact byte offsets pinned by worker 07/09. No
+ *                       at the exact byte offsets pinned by disassembly. No
  *                       proprietary XDK code is copied; these are struct layouts
  *                       asserted against the XBE bytes.
  *   2. TRACE RING     — bounded, pre-allocated. The URB completion callback runs
- *                       at DISPATCH_LEVEL (worker 09) and may ONLY push one
+ *                       at DISPATCH_LEVEL and may ONLY push one
  *                       bounded event (a raw IN packet, or a status/error) and
  *                       re-submit the interrupt URB. No malloc, no file I/O, no
  *                       Sleep. The main loop drains, formats and writes.
  *   3. GIP FRAMES     — the exact power-on / LED / rumble / identify / announce
  *                       / input / status frames of the wired no-auth GIP path,
  *                       byte-for-byte the packet core/gip.c (the hardened parser
- *                       this worker mirrors) emits/consumes.
+ *                       this driver mirrors) emits/consumes.
  *   4. PIN HELPERS    — byte-signature / shape-pin helpers used to fail-closed
  *                       arm the FindClassDriver detour.
  *
@@ -53,7 +53,7 @@ typedef int16_t  s16;
 #define GDR_LIT_LEN(s) (sizeof(s) - 1u)
 
 /* ------------------------------------------------------------------ */
-/* 1. URB ABI — byte offsets VERIFIED in worker 07/09                  */
+/* 1. URB ABI — byte offsets VERIFIED by disassembly                  */
 /* ------------------------------------------------------------------ */
 
 /* _URB_HEADER: Length +0, Function +1, reserved +2..3, Status +4,
@@ -87,7 +87,7 @@ typedef struct gdr_urb_open {
 /* BULK_OR_INTERRUPT transfer (Function 0x41), Length 0x28 = 40 B.
  *
  * TRUE field semantics, independently traced from the linked XAPILIB XBE by
- * the Sol audit (completion/program-transfer/transfer-sizing disassembly) —
+ * the audit (completion/program-transfer/transfer-sizing disassembly) —
  * do NOT trust the historical field names below:
  *   +0x04 Hdr.Status     = REAL URB completion status. status0 does NOT mean
  *                          "sent"; errors are written here (completion @2ed24).
@@ -130,7 +130,7 @@ typedef struct gdr_urb_transfer {
  * `88 5e 2e`). Direction is 0 in both — the HCD selects TD direction from
  * FlagB0 (2=IN, 1=OUT), NOT from the Direction byte. */
 
-/* USB_CLASS_DRIVER_DESCRIPTION (VERIFIED worker 07 + slice2 disassembly).
+/* USB_CLASS_DRIVER_DESCRIPTION (VERIFIED by disassembly).
  * MatchByte0 compared with the low byte of the console-computed PNP_CLASS_ID,
  * MatchByte1 with the high byte. For the measured GIP class id 0xFF81:
  * MatchByte0=0x81, MatchByte1=0xFF.
@@ -927,16 +927,16 @@ static int gdr_gip_arm_gate(unsigned int pins) { return (pins == GDR_PIN_ALL) ? 
 /* Transport-live guard: active GIP work (poll + OUT submit) is allowed ONLY
  * when Attach ran AND the interrupt IN endpoint opened. When the hook fails
  * to arm, Attach never runs, so both are 0 and this returns 0 — the loop then
- * never submits a URB through a NULL device/handle (the worker 11 console
+ * never submits a URB through a NULL device/handle (the console
  * hang: PINFAIL -> blind-start queued OUT -> NULL IUsbDevice submit). */
 static int gdr_transport_live(int attached, u32 in_handle) {
     return attached && (in_handle != 0u);
 }
 
 /* ------------------------------------------------------------------ */
-/* 5. Attach state machine (worker 14)                                 */
+/* 5. Attach state machine                                             */
 /*                                                                     */
-/* Worker 13 (ogxbox/research/enum/REPORT.md) proved the stage-1 Attach*/
+/* Enumeration research proved the stage-1 Attach                     */
 /* is wrong: 0xFF81 is a DEVICE-level class, so the stack has NOT      */
 /* fetched the config descriptor and has NOT sent SET_CONFIGURATION    */
 /* (Stage5 @0x2aef0 / Stage6 @0x2aca9 run only on the bDeviceClass==0  */
@@ -1410,7 +1410,7 @@ static u32 gdr_in_mps(const struct gdr_attach_ctx *ctx) {
 /* Interrupt-IN completion (DISPATCH_LEVEL): log RX with the TRUE byte count
  * and re-arm.
  *
- * Corrected field use (Sol audit, from the linked XBE):
+ * Corrected field use (from the linked XBE):
  *   - actual received bytes = TransferLength (+0x14), where the HCD
  *     ACCUMULATES completed bytes at completion. Snapshot it BEFORE resetting.
  *   - ByteCount (+0x20) is the ORIGINAL MAPPED length, NOT received bytes; it

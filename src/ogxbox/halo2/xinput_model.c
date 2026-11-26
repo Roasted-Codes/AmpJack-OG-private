@@ -7,7 +7,7 @@ void ogx_fill_gamepad_caps(ogx_capabilities_t *caps)
 		return;
 
 	/* Zero-fill the whole 25-byte struct: no field is left uninitialized,
-	 * unlike worker 03's filler which wrote only SubType/Reserved/Rumble. */
+	 * unlike the earlier filler which wrote only SubType/Reserved/Rumble. */
 	memset(caps, 0, sizeof(*caps));
 
 	caps->SubType  = OGX_DEVSUBTYPE_GAMEPAD;

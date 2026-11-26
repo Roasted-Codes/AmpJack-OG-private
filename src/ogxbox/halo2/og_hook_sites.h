@@ -2,7 +2,7 @@
 /*
  * og_hook_sites.h -- Halo 2 TU1.5 u803 XInput hook sites (VERIFIED constants).
  *
- * Promoted from worker 03's hook_sites.h (ogxbox/work/03-halo/). The addresses,
+ * Promoted from the first hook_sites.h. The addresses,
  * original 5 bytes, displaced span and resume VA are re-asserted byte-for-byte
  * against the pinned XBE by ogxbox/integration/detour_plan.py (--xbe path).
  *

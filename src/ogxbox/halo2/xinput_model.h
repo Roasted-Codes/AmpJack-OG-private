@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
- * xinput_model.h -- the classic-Xbox XINPUT structures, promoted from worker 03's
+ * xinput_model.h -- the classic-Xbox XINPUT structures, promoted from the earlier
  * input_model.h TYPES (VERIFIED against OXDK/xbox/xdk/include/xbox.h). The
  * backend-independent ampjack_input_snapshot_t + ampjack_map_snapshot_to_xinput()
  * are DROPPED here: the hardened og_gip adapter (ogxbox/gip/og_gamepad.h) already
@@ -44,7 +44,7 @@
 #define XG_AB_LEFT_TRIG   6
 #define XG_AB_RIGHT_TRIG  7
 
-/* Return codes (VERIFIED from u803 XBE disassembly, worker 03 REPORT.md) */
+/* Return codes (VERIFIED from u803 XBE disassembly) */
 #define OGX_ERR_SUCCESS           0u     /* XINPUT_ERR_SUCCESS */
 #define OGX_ERR_INVALID_PARAM     0x57u  /* 87 ERROR_INVALID_PARAMETER */
 #define OGX_ERR_NOT_CONNECTED     0x48Fu /* 1167 ERROR_DEVICE_NOT_CONNECTED */
@@ -126,7 +126,7 @@ _Static_assert(sizeof(ogx_input_feedback_header_t) == 66, "feedback header 66B")
 _Static_assert(sizeof(ogx_input_feedback_t)         == OGX_XINPUT_FEEDBACK_SIZE, "feedback 70B");
 
 /* Fully initialize an XINPUT_CAPABILITIES. Every field is written (zero-fill
- * first) -- fixes worker 03's initializer which left Gamepad fields set.
+ * first) -- fixes the earlier initializer which left Gamepad fields set.
  *
  * Rumble (Vibration) is reported as ZERO: this milestone has NO motors, and
  * claiming 0xFFFF support while returning no output would be dishonest.
