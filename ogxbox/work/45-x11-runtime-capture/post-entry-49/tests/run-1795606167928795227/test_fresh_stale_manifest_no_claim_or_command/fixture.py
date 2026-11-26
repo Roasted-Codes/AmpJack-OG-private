@@ -1,1 +1,0 @@
-# isolated source fixture
